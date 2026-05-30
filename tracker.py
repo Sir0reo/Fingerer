@@ -14,16 +14,33 @@ pyautogui.PAUSE = 0
 pyautogui.FAILSAFE = True  # slam cursor to a corner to abort
 
 # --- Tunable constants ---------------------------------------------------
-SMOOTHING = 5            # rolling-average window (frames)
-MARGIN = 0.15            # inset fraction of frame edges for the active region
-PINCH_THRESHOLD = 0.05   # normalized fingertip distance for a pinch
+SMOOTHING = 10           # default rolling-average window (frames)
+MARGIN = 0.15            # default inset fraction (overridden live by Speed slider)
+PINCH_THRESHOLD = 0.05   # normalized distance for a click gesture
 CLICK_COOLDOWN = 0.3     # seconds between clicks of the same button
 CAM_INDEX = 0            # default webcam index
 
+# Speed slider -> active-region margin (higher speed = larger margin = faster cursor)
+SPEED_MIN, SPEED_MAX = 1, 10
+DEFAULT_SPEED = 4
+MARGIN_AT_MIN_SPEED = 0.05   # slow: large active region
+MARGIN_AT_MAX_SPEED = 0.35   # fast: small active region
+
+# Smoothing slider range (frames averaged)
+SMOOTHING_MIN, SMOOTHING_MAX = 1, 20
+DEFAULT_SMOOTHING = SMOOTHING
+
+# Two-fist stop gesture
+TWO_FIST_HOLD = 0.4      # seconds both fists must be held to stop tracking
+
 # MediaPipe landmark indices
 THUMB_TIP = 4
+INDEX_PIP = 6            # index finger middle joint (left-click target)
 INDEX_TIP = 8
 MIDDLE_TIP = 12
+# Fingertip / PIP pairs for fist detection (index, middle, ring, pinky)
+FINGER_TIPS = (8, 12, 16, 20)
+FINGER_PIPS = (6, 10, 14, 18)
 
 
 def distance(p1, p2):
@@ -46,6 +63,28 @@ def map_to_screen(nx, ny, screen_w, screen_h, margin=MARGIN):
     return int(round(x)), int(round(y))
 
 
+def speed_to_margin(speed):
+    """Map a Speed slider value (SPEED_MIN..SPEED_MAX) to an active-region margin.
+
+    Higher speed -> larger margin -> smaller active region -> the cursor travels
+    farther for the same hand movement. Returns a float margin.
+    """
+    speed = min(max(speed, SPEED_MIN), SPEED_MAX)
+    frac = (speed - SPEED_MIN) / (SPEED_MAX - SPEED_MIN)
+    return MARGIN_AT_MIN_SPEED + frac * (MARGIN_AT_MAX_SPEED - MARGIN_AT_MIN_SPEED)
+
+
+def is_fist(landmarks):
+    """Return True if a hand is a closed fist (all four fingers curled).
+
+    A finger is curled when its tip sits lower in the image (larger y) than its
+    PIP joint. The thumb is ignored. `landmarks` is a MediaPipe hand-landmark
+    object exposing `.landmark` (a sequence of points with .x/.y).
+    """
+    lm = landmarks.landmark
+    return all(lm[tip].y > lm[pip].y for tip, pip in zip(FINGER_TIPS, FINGER_PIPS))
+
+
 class Smoother:
     """Rolling-average smoother for (x, y) coordinates."""
 
@@ -65,6 +104,12 @@ class Smoother:
     def reset(self):
         self._xs.clear()
         self._ys.clear()
+
+    def set_window(self, n):
+        """Change the averaging window length, keeping the most recent samples."""
+        n = max(1, int(n))
+        self._xs = deque(self._xs, maxlen=n)
+        self._ys = deque(self._ys, maxlen=n)
 
 
 class ClickLatch:
@@ -101,13 +146,25 @@ class FingerMouseTracker:
         self._thread = None
         self._stop_event = threading.Event()
         self._screen_w, self._screen_h = pyautogui.size()
-        self._smoother = Smoother(SMOOTHING)
+        self._smoother = Smoother(DEFAULT_SMOOTHING)
         self._left = ClickLatch()
         self._right = ClickLatch()
+        self._margin = speed_to_margin(DEFAULT_SPEED)
+        self._fist_since = None     # when both fists were first seen (stop hold)
+        self._stop_reason = None    # status message to show on loop exit
 
     @property
     def running(self):
         return self._thread is not None and self._thread.is_alive()
+
+    def set_speed(self, value):
+        """Set cursor speed (SPEED_MIN..SPEED_MAX); higher = faster cursor."""
+        self._margin = speed_to_margin(value)
+
+    def set_smoothing(self, value):
+        """Set the smoothing window in frames; higher = steadier, more lag."""
+        n = min(max(int(value), SMOOTHING_MIN), SMOOTHING_MAX)
+        self._smoother.set_window(n)
 
     def _status(self, msg):
         self._status_callback(msg)
@@ -119,6 +176,8 @@ class FingerMouseTracker:
         self._smoother.reset()
         self._left.reset()
         self._right.reset()
+        self._fist_since = None
+        self._stop_reason = None
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -134,7 +193,7 @@ class FingerMouseTracker:
             self._status("Camera error: could not open webcam")
             return
         hands = mp.solutions.hands.Hands(
-            max_num_hands=1,
+            max_num_hands=2,
             min_detection_confidence=0.7,
             min_tracking_confidence=0.7,
         )
@@ -148,28 +207,46 @@ class FingerMouseTracker:
                 frame = cv2.flip(frame, 1)
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 result = hands.process(rgb)
-                if result.multi_hand_landmarks:
-                    self._process_hand(result.multi_hand_landmarks[0])
-                else:
+                now = time.time()
+                hand_lms = result.multi_hand_landmarks
+
+                if not hand_lms:
+                    self._fist_since = None
                     self._status("Tracking — no hand")
+                elif len(hand_lms) >= 2 and is_fist(hand_lms[0]) and is_fist(hand_lms[1]):
+                    # Two fists held -> stop tracking (deliberate gesture).
+                    if self._fist_since is None:
+                        self._fist_since = now
+                    if now - self._fist_since >= TWO_FIST_HOLD:
+                        self._stop_reason = "Stopped — two fists"
+                        self._stop_event.set()
+                        break
+                    self._status("Two fists — hold to stop…")
+                else:
+                    self._fist_since = None
+                    self._process_hand(hand_lms[0], now)
         except Exception as exc:  # keep the app alive; report and stop
             self._status(f"Camera error: {exc}")
         finally:
             cap.release()
             hands.close()
-            self._status("Stopped")
+            self._status(self._stop_reason or "Stopped")
 
-    def _process_hand(self, landmarks):
+    def _process_hand(self, landmarks, now):
         lm = landmarks.landmark
-        index, thumb, middle = lm[INDEX_TIP], lm[THUMB_TIP], lm[MIDDLE_TIP]
+        index_tip, thumb = lm[INDEX_TIP], lm[THUMB_TIP]
+        index_pip, middle_tip = lm[INDEX_PIP], lm[MIDDLE_TIP]
 
-        sx, sy = map_to_screen(index.x, index.y, self._screen_w, self._screen_h)
+        sx, sy = map_to_screen(
+            index_tip.x, index_tip.y, self._screen_w, self._screen_h, self._margin
+        )
         smooth_x, smooth_y = self._smoother.add(sx, sy)
         pyautogui.moveTo(smooth_x, smooth_y)
 
-        now = time.time()
-        left_dist = distance(thumb, index)
-        right_dist = distance(thumb, middle)
+        # Left click: thumb tip touches the index finger's middle joint (PIP), so
+        # the pointer (index tip) doesn't move when clicking.
+        left_dist = distance(thumb, index_pip)
+        right_dist = distance(thumb, middle_tip)
 
         # Always advance BOTH latches so their pinched/release state stays
         # coherent every frame; then apply left-click priority.
