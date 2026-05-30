@@ -85,6 +85,42 @@ def test_cursor_smoother_returns_first_sample_rounded():
     assert s.add(100.4, 200.6, t=0.0) == (100, 201)
 
 
+from tracker import Deadzone
+
+
+def test_deadzone_first_move_always_passes():
+    dz = Deadzone(radius=8)
+    assert dz.filter(100, 100) == (100, 100)
+
+
+def test_deadzone_suppresses_small_move():
+    dz = Deadzone(radius=8)
+    dz.filter(100, 100)
+    assert dz.filter(103, 104) is None  # ~5 px < 8 -> ignored
+
+
+def test_deadzone_allows_large_move():
+    dz = Deadzone(radius=8)
+    dz.filter(100, 100)
+    assert dz.filter(100, 120) == (100, 120)  # 20 px >= 8 -> moves
+
+
+def test_deadzone_reference_is_not_cumulative():
+    # Small steps are measured from the last committed position, not summed.
+    dz = Deadzone(radius=10)
+    dz.filter(0, 0)
+    assert dz.filter(6, 0) is None    # 6 < 10
+    assert dz.filter(9, 0) is None    # still measured from (0,0): 9 < 10
+    assert dz.filter(11, 0) == (11, 0)  # 11 >= 10 -> commits and moves
+
+
+def test_deadzone_reset_clears_reference():
+    dz = Deadzone(radius=8)
+    dz.filter(50, 50)
+    dz.reset()
+    assert dz.filter(51, 51) == (51, 51)  # first move after reset always passes
+
+
 from tracker import HoldClicker
 
 

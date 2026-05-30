@@ -2,7 +2,8 @@
 
 Control your mouse with your finger via webcam (Windows).
 
-- **Move cursor:** index fingertip
+- **Move cursor:** index fingertip (tiny movements are ignored, so the pointer
+  stays steady while you hold still or click)
 - **Left click / hold:** touch your **thumb** to the **middle joint of your index
   finger**. A quick tap clicks; holding keeps the left button down (so you can drag).
 - **Right click / hold:** touch your **middle fingertip** to that same index knuckle.

@@ -18,10 +18,11 @@ PINCH_THRESHOLD = 0.07   # press a click when fingers get this close (smaller ge
 PINCH_RELEASE = 0.11     # release the held click once fingers open past this (hysteresis)
 CAM_INDEX = 0            # default webcam index
 CAM_WIDTH, CAM_HEIGHT = 1280, 720   # request higher-res frames for better accuracy
+CURSOR_DEADZONE = 8      # px; ignore cursor moves smaller than this (kills micro-jitter)
 
 # Speed slider -> active-region margin (higher speed = larger margin = faster cursor)
 SPEED_MIN, SPEED_MAX = 1, 10
-DEFAULT_SPEED = 7        # high default sensitivity: small hand moves move the cursor
+DEFAULT_SPEED = 4        # default cursor sensitivity (gain)
 MARGIN_AT_MIN_SPEED = 0.05   # slow: large active region
 MARGIN_AT_MAX_SPEED = 0.35   # fast: small active region
 
@@ -171,6 +172,29 @@ class CursorSmoother:
         self._fy.reset()
 
 
+class Deadzone:
+    """Suppresses tiny cursor movement so micro-jitter is ignored.
+
+    Returns the position to move to, or None when the new position is within
+    `radius` pixels of the last committed position (meaning: don't move). The
+    reference position only updates on a committed move, so the cursor stays
+    perfectly still until a movement larger than the radius occurs.
+    """
+
+    def __init__(self, radius=CURSOR_DEADZONE):
+        self.radius = radius
+        self._last = None
+
+    def filter(self, x, y):
+        if self._last is None or math.hypot(x - self._last[0], y - self._last[1]) >= self.radius:
+            self._last = (x, y)
+            return self._last
+        return None
+
+    def reset(self):
+        self._last = None
+
+
 class HoldClicker:
     """Press-and-hold mouse buttons from two gesture distances.
 
@@ -231,6 +255,7 @@ class FingerMouseTracker:
         self._stop_event = threading.Event()
         self._screen_w, self._screen_h = pyautogui.size()
         self._smoother = CursorSmoother(smoothing_to_cutoff(DEFAULT_SMOOTHING))
+        self._deadzone = Deadzone(CURSOR_DEADZONE)
         self._clicker = HoldClicker(
             press_cb=lambda b: pyautogui.mouseDown(button=b),
             release_cb=lambda b: pyautogui.mouseUp(button=b),
@@ -259,6 +284,7 @@ class FingerMouseTracker:
             return
         self._stop_event.clear()
         self._smoother.reset()
+        self._deadzone.reset()
         self._clicker.release_all()
         self._fist_since = None
         self._stop_reason = None
@@ -329,7 +355,9 @@ class FingerMouseTracker:
             index_tip.x, index_tip.y, self._screen_w, self._screen_h, self._margin
         )
         smooth_x, smooth_y = self._smoother.add(sx, sy, now)
-        pyautogui.moveTo(smooth_x, smooth_y)
+        pos = self._deadzone.filter(smooth_x, smooth_y)
+        if pos is not None:   # skip sub-deadzone moves so tiny jitter is ignored
+            pyautogui.moveTo(*pos)
 
         # Both click gestures touch the index finger's middle joint (PIP) so the
         # pointer (index tip) stays put: thumb -> hold left, middle -> hold right.
