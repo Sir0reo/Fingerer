@@ -85,35 +85,58 @@ def test_cursor_smoother_returns_first_sample_rounded():
     assert s.add(100.4, 200.6, t=0.0) == (100, 201)
 
 
-from tracker import ClickLatch
+from tracker import HoldClicker
 
 
-def test_latch_fires_on_first_pinch():
-    latch = ClickLatch(threshold=0.05, cooldown=0.3)
-    assert latch.update(dist=0.02, now=0.0) is True
+def _recording_clicker(threshold=0.07, release_threshold=0.11):
+    """A HoldClicker that records ('press'|'release', button) events."""
+    events = []
+    clicker = HoldClicker(
+        press_cb=lambda b: events.append(("press", b)),
+        release_cb=lambda b: events.append(("release", b)),
+        threshold=threshold,
+        release_threshold=release_threshold,
+    )
+    return clicker, events
 
 
-def test_latch_does_not_repeat_while_held():
-    latch = ClickLatch(threshold=0.05, cooldown=0.3)
-    assert latch.update(dist=0.02, now=0.0) is True
-    # still pinched, no release yet -> no second fire
-    assert latch.update(dist=0.02, now=0.1) is False
-    assert latch.update(dist=0.02, now=0.5) is False
+def test_hold_presses_on_gesture_and_holds():
+    clicker, events = _recording_clicker()
+    assert clicker.update(left_dist=0.03, right_dist=0.5) == "left"
+    # still held while below the release threshold -> no new event
+    assert clicker.update(left_dist=0.03, right_dist=0.5) == "left"
+    assert events == [("press", "left")]
 
 
-def test_latch_refires_after_release_and_cooldown():
-    latch = ClickLatch(threshold=0.05, cooldown=0.3)
-    assert latch.update(dist=0.02, now=0.0) is True
-    latch.update(dist=0.20, now=0.1)   # released (above threshold)
-    # released but cooldown (0.3s) not elapsed yet
-    assert latch.update(dist=0.02, now=0.2) is False
-    latch.update(dist=0.20, now=0.35)  # release again
-    assert latch.update(dist=0.02, now=0.4) is True  # released + cooldown passed
+def test_hold_releases_when_fingers_open_past_hysteresis():
+    clicker, events = _recording_clicker()
+    clicker.update(left_dist=0.03, right_dist=0.5)   # press left
+    # opening just past threshold but within hysteresis keeps it held
+    assert clicker.update(left_dist=0.09, right_dist=0.5) == "left"
+    # opening past the release threshold releases it
+    assert clicker.update(left_dist=0.20, right_dist=0.5) is None
+    assert events == [("press", "left"), ("release", "left")]
 
 
-def test_latch_no_fire_when_above_threshold():
-    latch = ClickLatch(threshold=0.05, cooldown=0.3)
-    assert latch.update(dist=0.10, now=0.0) is False
+def test_hold_only_one_button_closest_wins():
+    clicker, events = _recording_clicker()
+    # both gestures below threshold -> the closer one (right) wins
+    assert clicker.update(left_dist=0.06, right_dist=0.02) == "right"
+    assert events == [("press", "right")]
+
+
+def test_hold_no_press_when_above_threshold():
+    clicker, events = _recording_clicker()
+    assert clicker.update(left_dist=0.20, right_dist=0.20) is None
+    assert events == []
+
+
+def test_release_all_releases_held_button():
+    clicker, events = _recording_clicker()
+    clicker.update(left_dist=0.03, right_dist=0.5)   # press left
+    clicker.release_all()
+    assert clicker.held is None
+    assert events == [("press", "left"), ("release", "left")]
 
 
 from tracker import (
@@ -121,7 +144,6 @@ from tracker import (
     is_fist,
     SPEED_MIN,
     SPEED_MAX,
-    DEFAULT_SPEED,
     MARGIN_AT_MIN_SPEED,
     MARGIN_AT_MAX_SPEED,
     FINGER_TIPS,
@@ -137,9 +159,9 @@ def test_speed_max_maps_to_largest_margin():
     assert math.isclose(speed_to_margin(SPEED_MAX), MARGIN_AT_MAX_SPEED)
 
 
-def test_default_speed_matches_legacy_margin():
-    # Default speed (4) should reproduce the original 0.15 active-region margin.
-    assert math.isclose(speed_to_margin(DEFAULT_SPEED), MARGIN)
+def test_speed_interior_point_is_linear():
+    # Speed 4 sits 1/3 of the way through the range: 0.05 + (1/3)*0.30 = 0.15.
+    assert math.isclose(speed_to_margin(4), 0.15)
 
 
 def test_speed_clamps_out_of_range():
