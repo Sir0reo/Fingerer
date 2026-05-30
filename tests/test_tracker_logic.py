@@ -60,3 +60,34 @@ def test_smoother_respects_maxlen():
     s.add(10, 10)
     # third value evicts the first; mean of (10,10) and (40,40)
     assert s.add(40, 40) == (25, 25)
+
+
+from tracker import ClickLatch
+
+
+def test_latch_fires_on_first_pinch():
+    latch = ClickLatch(threshold=0.05, cooldown=0.3)
+    assert latch.update(dist=0.02, now=0.0) is True
+
+
+def test_latch_does_not_repeat_while_held():
+    latch = ClickLatch(threshold=0.05, cooldown=0.3)
+    assert latch.update(dist=0.02, now=0.0) is True
+    # still pinched, no release yet -> no second fire
+    assert latch.update(dist=0.02, now=0.1) is False
+    assert latch.update(dist=0.02, now=0.5) is False
+
+
+def test_latch_refires_after_release_and_cooldown():
+    latch = ClickLatch(threshold=0.05, cooldown=0.3)
+    assert latch.update(dist=0.02, now=0.0) is True
+    latch.update(dist=0.20, now=0.1)   # released (above threshold)
+    # released but cooldown (0.3s) not elapsed yet
+    assert latch.update(dist=0.02, now=0.2) is False
+    latch.update(dist=0.20, now=0.35)  # release again
+    assert latch.update(dist=0.02, now=0.4) is True  # released + cooldown passed
+
+
+def test_latch_no_fire_when_above_threshold():
+    latch = ClickLatch(threshold=0.05, cooldown=0.3)
+    assert latch.update(dist=0.10, now=0.0) is False

@@ -49,3 +49,28 @@ class Smoother:
     def reset(self):
         self._xs.clear()
         self._ys.clear()
+
+
+class ClickLatch:
+    """Single-button pinch-click gate with release latch + cooldown."""
+
+    def __init__(self, threshold=PINCH_THRESHOLD, cooldown=CLICK_COOLDOWN):
+        self.threshold = threshold
+        self.cooldown = cooldown
+        self._pinched = False        # currently below threshold (held)
+        self._last_click_time = -1e9
+
+    def update(self, dist, now):
+        """Return True exactly once per fresh pinch, honoring cooldown."""
+        below = dist < self.threshold
+        fire = False
+        if below and not self._pinched:
+            if now - self._last_click_time >= self.cooldown:
+                fire = True
+                self._last_click_time = now
+        self._pinched = below
+        return fire
+
+    def reset(self):
+        self._pinched = False
+        self._last_click_time = -1e9
