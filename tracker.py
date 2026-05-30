@@ -3,7 +3,6 @@
 import math
 import threading
 import time
-from collections import deque
 
 import cv2
 import mediapipe as mp
@@ -14,11 +13,11 @@ pyautogui.PAUSE = 0
 pyautogui.FAILSAFE = True  # slam cursor to a corner to abort
 
 # --- Tunable constants ---------------------------------------------------
-SMOOTHING = 10           # default rolling-average window (frames)
 MARGIN = 0.15            # default inset fraction (overridden live by Speed slider)
 PINCH_THRESHOLD = 0.05   # normalized distance for a click gesture
 CLICK_COOLDOWN = 0.3     # seconds between clicks of the same button
 CAM_INDEX = 0            # default webcam index
+CAM_WIDTH, CAM_HEIGHT = 1280, 720   # request higher-res frames for better accuracy
 
 # Speed slider -> active-region margin (higher speed = larger margin = faster cursor)
 SPEED_MIN, SPEED_MAX = 1, 10
@@ -26,9 +25,15 @@ DEFAULT_SPEED = 4
 MARGIN_AT_MIN_SPEED = 0.05   # slow: large active region
 MARGIN_AT_MAX_SPEED = 0.35   # fast: small active region
 
-# Smoothing slider range (frames averaged)
+# Smoothing slider -> One Euro Filter min-cutoff (higher slider = smoother).
+# The One Euro Filter smooths hard when the hand is slow (kills jitter) but eases
+# off when it moves fast (kills lag), unlike a fixed-window moving average.
 SMOOTHING_MIN, SMOOTHING_MAX = 1, 20
-DEFAULT_SMOOTHING = SMOOTHING
+DEFAULT_SMOOTHING = 10
+MIN_CUTOFF_AT_MIN_SMOOTHING = 3.0   # low smoothing: very responsive
+MIN_CUTOFF_AT_MAX_SMOOTHING = 0.2   # high smoothing: very steady
+ONE_EURO_BETA = 0.01                # speed coefficient — keeps lag low on fast moves
+ONE_EURO_DCUTOFF = 1.0              # derivative cutoff (filters the speed estimate)
 
 # Two-fist stop gesture
 TWO_FIST_HOLD = 0.4      # seconds both fists must be held to stop tracking
@@ -85,31 +90,85 @@ def is_fist(landmarks):
     return all(lm[tip].y > lm[pip].y for tip, pip in zip(FINGER_TIPS, FINGER_PIPS))
 
 
-class Smoother:
-    """Rolling-average smoother for (x, y) coordinates."""
+def smoothing_to_cutoff(value):
+    """Map a Smoothing slider value to a One Euro Filter min-cutoff frequency.
 
-    def __init__(self, maxlen=SMOOTHING):
-        self._xs = deque(maxlen=maxlen)
-        self._ys = deque(maxlen=maxlen)
+    Higher slider -> lower cutoff -> stronger smoothing of slow movement.
+    Returns a float cutoff frequency.
+    """
+    value = min(max(value, SMOOTHING_MIN), SMOOTHING_MAX)
+    frac = (value - SMOOTHING_MIN) / (SMOOTHING_MAX - SMOOTHING_MIN)
+    return MIN_CUTOFF_AT_MIN_SMOOTHING + frac * (
+        MIN_CUTOFF_AT_MAX_SMOOTHING - MIN_CUTOFF_AT_MIN_SMOOTHING
+    )
 
-    def add(self, x, y):
-        """Add a sample and return the integer (mean_x, mean_y)."""
-        self._xs.append(x)
-        self._ys.append(y)
-        return (
-            int(sum(self._xs) / len(self._xs)),
-            int(sum(self._ys) / len(self._ys)),
-        )
+
+class OneEuroFilter:
+    """One-dimensional One Euro Filter (Casiez, Roussel & Vogel, 2012).
+
+    An adaptive low-pass filter: it smooths heavily at low speed (removing
+    jitter) and lightly at high speed (removing lag). Operates in continuous
+    time using per-sample timestamps.
+    """
+
+    def __init__(self, min_cutoff=1.0, beta=ONE_EURO_BETA, d_cutoff=ONE_EURO_DCUTOFF):
+        self.min_cutoff = min_cutoff
+        self.beta = beta
+        self.d_cutoff = d_cutoff
+        self.reset()
+
+    @staticmethod
+    def _alpha(cutoff, dt):
+        tau = 1.0 / (2.0 * math.pi * cutoff)
+        return 1.0 / (1.0 + tau / dt)
 
     def reset(self):
-        self._xs.clear()
-        self._ys.clear()
+        self._x_prev = None
+        self._dx_prev = 0.0
+        self._t_prev = None
 
-    def set_window(self, n):
-        """Change the averaging window length, keeping the most recent samples."""
-        n = max(1, int(n))
-        self._xs = deque(self._xs, maxlen=n)
-        self._ys = deque(self._ys, maxlen=n)
+    def filter(self, x, t):
+        """Return the smoothed value of sample x taken at time t (seconds)."""
+        if self._x_prev is None:
+            self._x_prev = x
+            self._t_prev = t
+            return x
+        dt = t - self._t_prev
+        if dt <= 0:
+            dt = 1e-3
+        self._t_prev = t
+        dx = (x - self._x_prev) / dt
+        a_d = self._alpha(self.d_cutoff, dt)
+        dx_hat = a_d * dx + (1.0 - a_d) * self._dx_prev
+        cutoff = self.min_cutoff + self.beta * abs(dx_hat)
+        a = self._alpha(cutoff, dt)
+        x_hat = a * x + (1.0 - a) * self._x_prev
+        self._x_prev = x_hat
+        self._dx_prev = dx_hat
+        return x_hat
+
+
+class CursorSmoother:
+    """Smooths a 2-D cursor position with one One Euro Filter per axis."""
+
+    def __init__(self, min_cutoff):
+        self._fx = OneEuroFilter(min_cutoff)
+        self._fy = OneEuroFilter(min_cutoff)
+
+    def add(self, x, y, t):
+        """Add a sample at time t; return the smoothed integer (x, y)."""
+        return (
+            int(round(self._fx.filter(x, t))),
+            int(round(self._fy.filter(y, t))),
+        )
+
+    def set_min_cutoff(self, cutoff):
+        self._fx.min_cutoff = cutoff
+        self._fy.min_cutoff = cutoff
+
+    def reset(self):
+        self._fx.reset()
+        self._fy.reset()
 
 
 class ClickLatch:
@@ -146,7 +205,7 @@ class FingerMouseTracker:
         self._thread = None
         self._stop_event = threading.Event()
         self._screen_w, self._screen_h = pyautogui.size()
-        self._smoother = Smoother(DEFAULT_SMOOTHING)
+        self._smoother = CursorSmoother(smoothing_to_cutoff(DEFAULT_SMOOTHING))
         self._left = ClickLatch()
         self._right = ClickLatch()
         self._margin = speed_to_margin(DEFAULT_SPEED)
@@ -162,9 +221,8 @@ class FingerMouseTracker:
         self._margin = speed_to_margin(value)
 
     def set_smoothing(self, value):
-        """Set the smoothing window in frames; higher = steadier, more lag."""
-        n = min(max(int(value), SMOOTHING_MIN), SMOOTHING_MAX)
-        self._smoother.set_window(n)
+        """Set smoothing strength (SMOOTHING_MIN..SMOOTHING_MAX); higher = steadier."""
+        self._smoother.set_min_cutoff(smoothing_to_cutoff(value))
 
     def _status(self, msg):
         self._status_callback(msg)
@@ -192,8 +250,11 @@ class FingerMouseTracker:
         if not cap.isOpened():
             self._status("Camera error: could not open webcam")
             return
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_WIDTH)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_HEIGHT)
         hands = mp.solutions.hands.Hands(
             max_num_hands=2,
+            model_complexity=1,        # full-accuracy hand landmark model
             min_detection_confidence=0.7,
             min_tracking_confidence=0.7,
         )
@@ -240,7 +301,7 @@ class FingerMouseTracker:
         sx, sy = map_to_screen(
             index_tip.x, index_tip.y, self._screen_w, self._screen_h, self._margin
         )
-        smooth_x, smooth_y = self._smoother.add(sx, sy)
+        smooth_x, smooth_y = self._smoother.add(sx, sy, now)
         pyautogui.moveTo(smooth_x, smooth_y)
 
         # Left click: thumb tip touches the index finger's middle joint (PIP), so

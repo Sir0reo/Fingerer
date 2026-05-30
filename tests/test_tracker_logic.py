@@ -47,26 +47,42 @@ def test_map_corner_never_hits_failsafe_origin():
     assert map_to_screen(0.0, 0.0, 1920, 1080) != (0, 0)
 
 
-from tracker import Smoother
+from tracker import OneEuroFilter, CursorSmoother
 
 
-def test_smoother_single_value_returns_itself():
-    s = Smoother(maxlen=5)
-    assert s.add(100, 200) == (100, 200)
+def test_oneeuro_first_sample_passes_through():
+    f = OneEuroFilter(min_cutoff=1.0)
+    assert f.filter(5.0, t=0.0) == 5.0
 
 
-def test_smoother_averages_history():
-    s = Smoother(maxlen=5)
-    s.add(0, 0)
-    assert s.add(10, 20) == (5, 10)  # mean of (0,0) and (10,20)
+def test_oneeuro_smooths_a_step_between_old_and_new():
+    f = OneEuroFilter(min_cutoff=1.0)
+    f.filter(0.0, t=0.0)
+    out = f.filter(10.0, t=1 / 30)  # one frame later
+    assert 0.0 < out < 10.0  # output lags toward the new value, not all the way
 
 
-def test_smoother_respects_maxlen():
-    s = Smoother(maxlen=2)
-    s.add(0, 0)
-    s.add(10, 10)
-    # third value evicts the first; mean of (10,10) and (40,40)
-    assert s.add(40, 40) == (25, 25)
+def test_oneeuro_converges_to_a_held_value():
+    f = OneEuroFilter(min_cutoff=1.0)
+    f.filter(0.0, t=0.0)
+    t = 0.0
+    for _ in range(120):  # hold 1.0 for ~4 seconds at 30 fps
+        t += 1 / 30
+        out = f.filter(1.0, t=t)
+    assert abs(out - 1.0) < 0.05
+
+
+def test_oneeuro_reset_restarts_passthrough():
+    f = OneEuroFilter(min_cutoff=1.0)
+    f.filter(3.0, t=0.0)
+    f.filter(9.0, t=0.1)
+    f.reset()
+    assert f.filter(7.0, t=0.2) == 7.0
+
+
+def test_cursor_smoother_returns_first_sample_rounded():
+    s = CursorSmoother(min_cutoff=1.0)
+    assert s.add(100.4, 200.6, t=0.0) == (100, 201)
 
 
 from tracker import ClickLatch
@@ -155,10 +171,28 @@ def test_is_fist_false_if_one_finger_extended():
     assert is_fist(hand) is False
 
 
-def test_smoother_set_window_keeps_recent_samples():
-    s = Smoother(maxlen=5)
-    s.add(0, 0)
-    s.add(10, 10)
-    s.add(20, 20)
-    s.set_window(2)  # keep only the two most recent: (10,10) and (20,20)
-    assert s.add(30, 30) == (25, 25)  # mean of (20,20) and (30,30)
+from tracker import (
+    smoothing_to_cutoff,
+    SMOOTHING_MIN,
+    SMOOTHING_MAX,
+    MIN_CUTOFF_AT_MIN_SMOOTHING,
+    MIN_CUTOFF_AT_MAX_SMOOTHING,
+)
+
+
+def test_min_smoothing_maps_to_most_responsive_cutoff():
+    assert math.isclose(smoothing_to_cutoff(SMOOTHING_MIN), MIN_CUTOFF_AT_MIN_SMOOTHING)
+
+
+def test_max_smoothing_maps_to_steadiest_cutoff():
+    assert math.isclose(smoothing_to_cutoff(SMOOTHING_MAX), MIN_CUTOFF_AT_MAX_SMOOTHING)
+
+
+def test_higher_smoothing_gives_lower_cutoff():
+    # More smoothing must mean a lower min-cutoff (stronger low-pass).
+    assert smoothing_to_cutoff(15) < smoothing_to_cutoff(5)
+
+
+def test_smoothing_clamps_out_of_range():
+    assert smoothing_to_cutoff(SMOOTHING_MIN - 9) == smoothing_to_cutoff(SMOOTHING_MIN)
+    assert smoothing_to_cutoff(SMOOTHING_MAX + 9) == smoothing_to_cutoff(SMOOTHING_MAX)

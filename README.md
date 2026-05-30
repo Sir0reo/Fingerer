@@ -11,7 +11,8 @@ Control your mouse with your finger via webcam (Windows).
 In the window, two sliders tune the feel live:
 
 - **Speed** — how far the cursor moves per hand movement
-- **Smoothing** — higher = steadier cursor, slightly more lag (raise this if it's jittery)
+- **Smoothing** — higher = steadier cursor. Uses an adaptive One Euro Filter, so it
+  stays responsive (low lag) even at high smoothing — raise it if the cursor jitters.
 
 ## Requirements
 
