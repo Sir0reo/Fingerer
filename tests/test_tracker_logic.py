@@ -124,14 +124,15 @@ def test_deadzone_reset_clears_reference():
 from tracker import HoldClicker
 
 
-def _recording_clicker(threshold=0.07, release_threshold=0.11):
+def _recording_clicker(left_threshold=0.09, left_release=0.13,
+                       right_threshold=0.045, right_release=0.075):
     """A HoldClicker that records ('press'|'release', button) events."""
     events = []
     clicker = HoldClicker(
         press_cb=lambda b: events.append(("press", b)),
         release_cb=lambda b: events.append(("release", b)),
-        threshold=threshold,
-        release_threshold=release_threshold,
+        left_threshold=left_threshold, left_release=left_release,
+        right_threshold=right_threshold, right_release=right_release,
     )
     return clicker, events
 
@@ -147,18 +148,26 @@ def test_hold_presses_on_gesture_and_holds():
 def test_hold_releases_when_fingers_open_past_hysteresis():
     clicker, events = _recording_clicker()
     clicker.update(left_dist=0.03, right_dist=0.5)   # press left
-    # opening just past threshold but within hysteresis keeps it held
-    assert clicker.update(left_dist=0.09, right_dist=0.5) == "left"
+    # opening past the press threshold but within hysteresis keeps it held
+    assert clicker.update(left_dist=0.10, right_dist=0.5) == "left"
     # opening past the release threshold releases it
     assert clicker.update(left_dist=0.20, right_dist=0.5) is None
     assert events == [("press", "left"), ("release", "left")]
 
 
-def test_hold_only_one_button_closest_wins():
+def test_hold_most_engaged_gesture_wins():
     clicker, events = _recording_clicker()
-    # both gestures below threshold -> the closer one (right) wins
+    # left ratio 0.06/0.09=0.67, right ratio 0.02/0.045=0.44 -> right is more engaged
     assert clicker.update(left_dist=0.06, right_dist=0.02) == "right"
     assert events == [("press", "right")]
+
+
+def test_left_triggers_where_right_will_not():
+    # At 0.07 the thumb->left gesture presses (< 0.09), but the same distance is
+    # too far for the stricter right gesture (> 0.045), so right must really touch.
+    clicker, events = _recording_clicker()
+    assert clicker.update(left_dist=0.07, right_dist=0.07) == "left"
+    assert events == [("press", "left")]
 
 
 def test_hold_no_press_when_above_threshold():

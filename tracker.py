@@ -14,8 +14,12 @@ pyautogui.FAILSAFE = True  # slam cursor to a corner to abort
 
 # --- Tunable constants ---------------------------------------------------
 MARGIN = 0.15            # default inset fraction (overridden live by Speed slider)
-PINCH_THRESHOLD = 0.07   # press a click when fingers get this close (smaller gesture)
-PINCH_RELEASE = 0.11     # release the held click once fingers open past this (hysteresis)
+# Per-gesture click thresholds (normalized distance). Left is easy to trigger;
+# right requires the middle finger to actually touch the index knuckle.
+LEFT_THRESHOLD = 0.09    # thumb -> index knuckle: press when this close (easy)
+LEFT_RELEASE = 0.13      # release once fingers open past this (hysteresis)
+RIGHT_THRESHOLD = 0.045  # middle -> index knuckle: must nearly touch to press
+RIGHT_RELEASE = 0.075    # release once they separate past this (hysteresis)
 CAM_INDEX = 0            # default webcam index
 CAM_WIDTH, CAM_HEIGHT = 1280, 720   # request higher-res frames for better accuracy
 CURSOR_DEADZONE = 8      # px; ignore cursor moves smaller than this (kills micro-jitter)
@@ -198,21 +202,25 @@ class Deadzone:
 class HoldClicker:
     """Press-and-hold mouse buttons from two gesture distances.
 
-    Whichever gesture goes below the press threshold (closest wins) holds its
-    button down; it releases when that gesture opens past the release threshold
-    (hysteresis avoids flicker). At most one button is held at a time. A quick
-    tap becomes a normal click; a sustained gesture holds the button (drag).
+    Each gesture (left = thumb→index, right = middle→index) has its own press
+    and release thresholds, so left can be easy to trigger while right must
+    nearly touch. Whichever eligible gesture is most engaged (smallest
+    distance-to-threshold ratio) holds its button down; it releases when that
+    gesture opens past its release threshold (hysteresis avoids flicker). At
+    most one button is held at a time. A quick tap clicks; a sustained gesture
+    holds the button (drag).
 
     `press_cb(button)` / `release_cb(button)` are called on the down/up edges
     with button names "left" or "right".
     """
 
     def __init__(self, press_cb, release_cb,
-                 threshold=PINCH_THRESHOLD, release_threshold=PINCH_RELEASE):
+                 left_threshold=LEFT_THRESHOLD, left_release=LEFT_RELEASE,
+                 right_threshold=RIGHT_THRESHOLD, right_release=RIGHT_RELEASE):
         self._press = press_cb
         self._release = release_cb
-        self.threshold = threshold
-        self.release_threshold = release_threshold
+        self._threshold = {"left": left_threshold, "right": right_threshold}
+        self._release_threshold = {"left": left_release, "right": right_release}
         self._held = None  # None | "left" | "right"
 
     @property
@@ -221,19 +229,19 @@ class HoldClicker:
 
     def update(self, left_dist, right_dist):
         """Advance one frame given the two gesture distances; return held button."""
+        dists = {"left": left_dist, "right": right_dist}
         if self._held is not None:
-            d = left_dist if self._held == "left" else right_dist
-            if d > self.release_threshold:
+            if dists[self._held] > self._release_threshold[self._held]:
                 self._release(self._held)
                 self._held = None
         if self._held is None:
             candidates = []
-            if left_dist < self.threshold:
-                candidates.append((left_dist, "left"))
-            if right_dist < self.threshold:
-                candidates.append((right_dist, "right"))
+            for button, dist in dists.items():
+                if dist < self._threshold[button]:
+                    # rank by engagement (distance relative to this button's threshold)
+                    candidates.append((dist / self._threshold[button], button))
             if candidates:
-                candidates.sort()              # closest gesture wins
+                candidates.sort()              # most-engaged gesture wins
                 self._held = candidates[0][1]
                 self._press(self._held)
         return self._held

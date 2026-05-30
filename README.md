@@ -11,8 +11,9 @@ Control your mouse with your finger via webcam (Windows).
 - **Stop tracking:** show **both hands as fists** for about half a second
 
 Both click gestures touch the index *knuckle* (not the tip), so the pointer stays
-put while you click. They trigger before your fingers fully meet, so only a small
-movement is needed.
+put while you click. Left click is easy — a small thumb movement triggers it.
+Right click is stricter: your middle finger must actually touch the index knuckle,
+which avoids accidental right-clicks since those fingers sit close together.
 
 In the window, two sliders tune the feel live:
 
