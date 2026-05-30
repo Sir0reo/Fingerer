@@ -22,22 +22,29 @@ def test_map_center_maps_to_screen_center():
     assert y == 540
 
 
-def test_map_low_edge_clamps_to_zero():
+def test_map_low_edge_clamps_to_min():
     x, y = map_to_screen(0.15, 0.15, 1920, 1080, margin=0.15)
-    assert x == 0
-    assert y == 0
+    assert x == 1
+    assert y == 1
 
 
 def test_map_high_edge_clamps_to_max():
     x, y = map_to_screen(0.85, 0.85, 1920, 1080, margin=0.15)
-    assert x == 1920
-    assert y == 1080
+    assert x == 1919
+    assert y == 1079
 
 
 def test_map_below_region_clamps_not_negative():
     x, y = map_to_screen(0.0, 0.0, 1920, 1080, margin=0.15)
-    assert x == 0
-    assert y == 0
+    assert x == 1
+    assert y == 1
+
+
+def test_map_corner_never_hits_failsafe_origin():
+    # Reaching the top-left of the active region must NOT map to (0, 0), which
+    # would trip pyautogui's fail-safe and abort tracking.
+    assert map_to_screen(0.15, 0.15, 1920, 1080) != (0, 0)
+    assert map_to_screen(0.0, 0.0, 1920, 1080) != (0, 0)
 
 
 from tracker import Smoother

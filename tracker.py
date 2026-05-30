@@ -34,13 +34,16 @@ def distance(p1, p2):
 def map_to_screen(nx, ny, screen_w, screen_h, margin=MARGIN):
     """Map normalized (nx, ny) within the inset active region to screen pixels.
 
-    The region [margin, 1-margin] maps onto [0, screen_dim]; out-of-region
-    values clamp to the edges. Returns integer (x, y).
+    The region [margin, 1-margin] maps onto the screen; out-of-region values
+    clamp to the edges. The output is bounded to [1, screen_dim - 1] so it stays
+    within valid pixel coordinates and never lands on pyautogui's (0, 0)
+    fail-safe corner (which would abort tracking during normal use). Returns
+    integer (x, y).
     """
     low, high = margin, 1.0 - margin
-    x = np.interp(nx, [low, high], [0, screen_w])
-    y = np.interp(ny, [low, high], [0, screen_h])
-    return int(x), int(y)
+    x = np.interp(nx, [low, high], [1, screen_w - 1])
+    y = np.interp(ny, [low, high], [1, screen_h - 1])
+    return int(round(x)), int(round(y))
 
 
 class Smoother:
