@@ -38,3 +38,25 @@ def test_map_below_region_clamps_not_negative():
     x, y = map_to_screen(0.0, 0.0, 1920, 1080, margin=0.15)
     assert x == 0
     assert y == 0
+
+
+from tracker import Smoother
+
+
+def test_smoother_single_value_returns_itself():
+    s = Smoother(maxlen=5)
+    assert s.add(100, 200) == (100, 200)
+
+
+def test_smoother_averages_history():
+    s = Smoother(maxlen=5)
+    s.add(0, 0)
+    assert s.add(10, 20) == (5, 10)  # mean of (0,0) and (10,20)
+
+
+def test_smoother_respects_maxlen():
+    s = Smoother(maxlen=2)
+    s.add(0, 0)
+    s.add(10, 10)
+    # third value evicts the first; mean of (10,10) and (40,40)
+    assert s.add(40, 40) == (25, 25)

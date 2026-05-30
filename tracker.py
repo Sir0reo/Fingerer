@@ -1,6 +1,8 @@
 """Fingerer — finger mouse control tracking logic."""
 
 import math
+from collections import deque
+
 import numpy as np
 
 # --- Tunable constants ---------------------------------------------------
@@ -26,3 +28,24 @@ def map_to_screen(nx, ny, screen_w, screen_h, margin=MARGIN):
     x = np.interp(nx, [low, high], [0, screen_w])
     y = np.interp(ny, [low, high], [0, screen_h])
     return int(x), int(y)
+
+
+class Smoother:
+    """Rolling-average smoother for (x, y) coordinates."""
+
+    def __init__(self, maxlen=SMOOTHING):
+        self._xs = deque(maxlen=maxlen)
+        self._ys = deque(maxlen=maxlen)
+
+    def add(self, x, y):
+        """Add a sample and return the integer (mean_x, mean_y)."""
+        self._xs.append(x)
+        self._ys.append(y)
+        return (
+            int(sum(self._xs) / len(self._xs)),
+            int(sum(self._ys) / len(self._ys)),
+        )
+
+    def reset(self):
+        self._xs.clear()
+        self._ys.clear()
