@@ -14,14 +14,14 @@ pyautogui.FAILSAFE = True  # slam cursor to a corner to abort
 
 # --- Tunable constants ---------------------------------------------------
 MARGIN = 0.15            # default inset fraction (overridden live by Speed slider)
-PINCH_THRESHOLD = 0.05   # normalized distance for a click gesture
-CLICK_COOLDOWN = 0.3     # seconds between clicks of the same button
+PINCH_THRESHOLD = 0.07   # press a click when fingers get this close (smaller gesture)
+PINCH_RELEASE = 0.11     # release the held click once fingers open past this (hysteresis)
 CAM_INDEX = 0            # default webcam index
 CAM_WIDTH, CAM_HEIGHT = 1280, 720   # request higher-res frames for better accuracy
 
 # Speed slider -> active-region margin (higher speed = larger margin = faster cursor)
 SPEED_MIN, SPEED_MAX = 1, 10
-DEFAULT_SPEED = 4
+DEFAULT_SPEED = 7        # high default sensitivity: small hand moves move the cursor
 MARGIN_AT_MIN_SPEED = 0.05   # slow: large active region
 MARGIN_AT_MAX_SPEED = 0.35   # fast: small active region
 
@@ -171,29 +171,54 @@ class CursorSmoother:
         self._fy.reset()
 
 
-class ClickLatch:
-    """Single-button pinch-click gate with release latch + cooldown."""
+class HoldClicker:
+    """Press-and-hold mouse buttons from two gesture distances.
 
-    def __init__(self, threshold=PINCH_THRESHOLD, cooldown=CLICK_COOLDOWN):
+    Whichever gesture goes below the press threshold (closest wins) holds its
+    button down; it releases when that gesture opens past the release threshold
+    (hysteresis avoids flicker). At most one button is held at a time. A quick
+    tap becomes a normal click; a sustained gesture holds the button (drag).
+
+    `press_cb(button)` / `release_cb(button)` are called on the down/up edges
+    with button names "left" or "right".
+    """
+
+    def __init__(self, press_cb, release_cb,
+                 threshold=PINCH_THRESHOLD, release_threshold=PINCH_RELEASE):
+        self._press = press_cb
+        self._release = release_cb
         self.threshold = threshold
-        self.cooldown = cooldown
-        self._pinched = False        # currently below threshold (held)
-        self._last_click_time = -1e9
+        self.release_threshold = release_threshold
+        self._held = None  # None | "left" | "right"
 
-    def update(self, dist, now):
-        """Return True exactly once per fresh pinch, honoring cooldown."""
-        below = dist < self.threshold
-        fire = False
-        if below and not self._pinched:
-            if now - self._last_click_time >= self.cooldown:
-                fire = True
-                self._last_click_time = now
-        self._pinched = below
-        return fire
+    @property
+    def held(self):
+        return self._held
 
-    def reset(self):
-        self._pinched = False
-        self._last_click_time = -1e9
+    def update(self, left_dist, right_dist):
+        """Advance one frame given the two gesture distances; return held button."""
+        if self._held is not None:
+            d = left_dist if self._held == "left" else right_dist
+            if d > self.release_threshold:
+                self._release(self._held)
+                self._held = None
+        if self._held is None:
+            candidates = []
+            if left_dist < self.threshold:
+                candidates.append((left_dist, "left"))
+            if right_dist < self.threshold:
+                candidates.append((right_dist, "right"))
+            if candidates:
+                candidates.sort()              # closest gesture wins
+                self._held = candidates[0][1]
+                self._press(self._held)
+        return self._held
+
+    def release_all(self):
+        """Release the held button, if any. Call on stop to avoid a stuck button."""
+        if self._held is not None:
+            self._release(self._held)
+            self._held = None
 
 
 class FingerMouseTracker:
@@ -206,8 +231,10 @@ class FingerMouseTracker:
         self._stop_event = threading.Event()
         self._screen_w, self._screen_h = pyautogui.size()
         self._smoother = CursorSmoother(smoothing_to_cutoff(DEFAULT_SMOOTHING))
-        self._left = ClickLatch()
-        self._right = ClickLatch()
+        self._clicker = HoldClicker(
+            press_cb=lambda b: pyautogui.mouseDown(button=b),
+            release_cb=lambda b: pyautogui.mouseUp(button=b),
+        )
         self._margin = speed_to_margin(DEFAULT_SPEED)
         self._fist_since = None     # when both fists were first seen (stop hold)
         self._stop_reason = None    # status message to show on loop exit
@@ -232,8 +259,7 @@ class FingerMouseTracker:
             return
         self._stop_event.clear()
         self._smoother.reset()
-        self._left.reset()
-        self._right.reset()
+        self._clicker.release_all()
         self._fist_since = None
         self._stop_reason = None
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -289,6 +315,7 @@ class FingerMouseTracker:
         except Exception as exc:  # keep the app alive; report and stop
             self._status(f"Camera error: {exc}")
         finally:
+            self._clicker.release_all()   # never leave a mouse button stuck down
             cap.release()
             hands.close()
             self._status(self._stop_reason or "Stopped")
@@ -304,20 +331,14 @@ class FingerMouseTracker:
         smooth_x, smooth_y = self._smoother.add(sx, sy, now)
         pyautogui.moveTo(smooth_x, smooth_y)
 
-        # Left click: thumb tip touches the index finger's middle joint (PIP), so
-        # the pointer (index tip) doesn't move when clicking.
+        # Both click gestures touch the index finger's middle joint (PIP) so the
+        # pointer (index tip) stays put: thumb -> hold left, middle -> hold right.
         left_dist = distance(thumb, index_pip)
-        right_dist = distance(thumb, middle_tip)
-
-        # Always advance BOTH latches so their pinched/release state stays
-        # coherent every frame; then apply left-click priority.
-        left_fire = self._left.update(left_dist, now)
-        right_fire = self._right.update(right_dist, now)
-        if left_fire:
-            pyautogui.click()
-            self._status("Tracking — left click")
-        elif right_fire:
-            pyautogui.click(button="right")
-            self._status("Tracking — right click")
+        right_dist = distance(middle_tip, index_pip)
+        held = self._clicker.update(left_dist, right_dist)
+        if held == "left":
+            self._status("Tracking — left hold")
+        elif held == "right":
+            self._status("Tracking — right hold")
         else:
             self._status("Tracking — hand detected")
