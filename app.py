@@ -3,7 +3,15 @@
 import queue
 import tkinter as tk
 
-from tracker import FingerMouseTracker
+from tracker import (
+    FingerMouseTracker,
+    SPEED_MIN,
+    SPEED_MAX,
+    DEFAULT_SPEED,
+    SMOOTHING_MIN,
+    SMOOTHING_MAX,
+    DEFAULT_SMOOTHING,
+)
 
 
 class FingererApp:
@@ -25,10 +33,37 @@ class FingererApp:
         )
         self.toggle_btn.pack(pady=10)
         self.status_label = tk.Label(root, text="Idle", fg="gray")
-        self.status_label.pack(padx=40, pady=(0, 20))
+        self.status_label.pack(padx=40, pady=(0, 10))
+
+        # Speed slider — how far the cursor moves per hand movement.
+        tk.Label(root, text="Speed").pack()
+        self.speed_var = tk.IntVar(value=DEFAULT_SPEED)
+        tk.Scale(
+            root, from_=SPEED_MIN, to=SPEED_MAX, orient="horizontal", length=220,
+            variable=self.speed_var, command=self.on_speed,
+        ).pack(padx=20)
+
+        # Smoothing slider — higher = steadier cursor, slightly more lag.
+        tk.Label(root, text="Smoothing").pack()
+        self.smooth_var = tk.IntVar(value=DEFAULT_SMOOTHING)
+        tk.Scale(
+            root, from_=SMOOTHING_MIN, to=SMOOTHING_MAX, orient="horizontal",
+            length=220, variable=self.smooth_var, command=self.on_smooth,
+        ).pack(padx=20, pady=(0, 10))
+
+        tk.Label(
+            root, text="Stop gesture: show both hands as fists",
+            fg="gray", font=("Segoe UI", 8),
+        ).pack(pady=(0, 12))
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.poll_status()
+
+    def on_speed(self, value):
+        self.tracker.set_speed(int(float(value)))
+
+    def on_smooth(self, value):
+        self.tracker.set_smoothing(int(float(value)))
 
     def toggle(self):
         if self.tracker.running:
@@ -43,7 +78,7 @@ class FingererApp:
             while True:
                 msg = self.status_queue.get_nowait()
                 self.status_label.config(text=msg)
-                if msg == "Stopped" or msg.startswith("Camera error"):
+                if msg.startswith("Stopped") or msg.startswith("Camera error"):
                     self.toggle_btn.config(text="Start")
         except queue.Empty:
             pass

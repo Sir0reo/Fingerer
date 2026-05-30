@@ -98,3 +98,67 @@ def test_latch_refires_after_release_and_cooldown():
 def test_latch_no_fire_when_above_threshold():
     latch = ClickLatch(threshold=0.05, cooldown=0.3)
     assert latch.update(dist=0.10, now=0.0) is False
+
+
+from tracker import (
+    speed_to_margin,
+    is_fist,
+    SPEED_MIN,
+    SPEED_MAX,
+    DEFAULT_SPEED,
+    MARGIN_AT_MIN_SPEED,
+    MARGIN_AT_MAX_SPEED,
+    FINGER_TIPS,
+    FINGER_PIPS,
+)
+
+
+def test_speed_min_maps_to_smallest_margin():
+    assert math.isclose(speed_to_margin(SPEED_MIN), MARGIN_AT_MIN_SPEED)
+
+
+def test_speed_max_maps_to_largest_margin():
+    assert math.isclose(speed_to_margin(SPEED_MAX), MARGIN_AT_MAX_SPEED)
+
+
+def test_default_speed_matches_legacy_margin():
+    # Default speed (4) should reproduce the original 0.15 active-region margin.
+    assert math.isclose(speed_to_margin(DEFAULT_SPEED), MARGIN)
+
+
+def test_speed_clamps_out_of_range():
+    assert speed_to_margin(SPEED_MIN - 5) == speed_to_margin(SPEED_MIN)
+    assert speed_to_margin(SPEED_MAX + 5) == speed_to_margin(SPEED_MAX)
+
+
+def _hand(curled):
+    """Build a fake 21-landmark hand. If curled, finger tips sit below (larger y)
+    their PIPs; otherwise tips sit above (smaller y)."""
+    pts = [SimpleNamespace(x=0.5, y=0.5) for _ in range(21)]
+    for tip, pip in zip(FINGER_TIPS, FINGER_PIPS):
+        pts[pip] = SimpleNamespace(x=0.5, y=0.5)
+        pts[tip] = SimpleNamespace(x=0.5, y=0.6 if curled else 0.4)
+    return SimpleNamespace(landmark=pts)
+
+
+def test_is_fist_true_for_curled_hand():
+    assert is_fist(_hand(curled=True)) is True
+
+
+def test_is_fist_false_for_open_hand():
+    assert is_fist(_hand(curled=False)) is False
+
+
+def test_is_fist_false_if_one_finger_extended():
+    hand = _hand(curled=True)
+    hand.landmark[FINGER_TIPS[1]] = SimpleNamespace(x=0.5, y=0.4)  # middle extended
+    assert is_fist(hand) is False
+
+
+def test_smoother_set_window_keeps_recent_samples():
+    s = Smoother(maxlen=5)
+    s.add(0, 0)
+    s.add(10, 10)
+    s.add(20, 20)
+    s.set_window(2)  # keep only the two most recent: (10,10) and (20,20)
+    assert s.add(30, 30) == (25, 25)  # mean of (20,20) and (30,30)
