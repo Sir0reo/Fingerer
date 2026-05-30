@@ -121,67 +121,75 @@ def test_deadzone_reset_clears_reference():
     assert dz.filter(51, 51) == (51, 51)  # first move after reset always passes
 
 
-from tracker import HoldClicker
+from tracker import GestureClicker
 
 
-def _recording_clicker(left_threshold=0.09, left_release=0.13,
-                       right_threshold=0.045, right_release=0.075):
-    """A HoldClicker that records ('press'|'release', button) events."""
+def _recording_clicker(hold_delay=0.5, left_threshold=0.05, left_release=0.08,
+                       right_threshold=0.05, right_release=0.08):
+    """A GestureClicker that records ('click'|'press'|'release', button) events."""
     events = []
-    clicker = HoldClicker(
+    clicker = GestureClicker(
+        click_cb=lambda b: events.append(("click", b)),
         press_cb=lambda b: events.append(("press", b)),
         release_cb=lambda b: events.append(("release", b)),
         left_threshold=left_threshold, left_release=left_release,
         right_threshold=right_threshold, right_release=right_release,
+        hold_delay=hold_delay,
     )
     return clicker, events
 
 
-def test_hold_presses_on_gesture_and_holds():
-    clicker, events = _recording_clicker()
-    assert clicker.update(left_dist=0.03, right_dist=0.5) == "left"
-    # still held while below the release threshold -> no new event
-    assert clicker.update(left_dist=0.03, right_dist=0.5) == "left"
-    assert events == [("press", "left")]
+def test_quick_tap_fires_a_click():
+    clicker, events = _recording_clicker(hold_delay=0.5)
+    clicker.update(left_dist=0.02, right_dist=0.5, now=0.0)   # contact
+    clicker.update(left_dist=0.20, right_dist=0.5, now=0.1)   # release before 0.5s
+    assert events == [("click", "left")]
 
 
-def test_hold_releases_when_fingers_open_past_hysteresis():
-    clicker, events = _recording_clicker()
-    clicker.update(left_dist=0.03, right_dist=0.5)   # press left
-    # opening past the press threshold but within hysteresis keeps it held
-    assert clicker.update(left_dist=0.10, right_dist=0.5) == "left"
-    # opening past the release threshold releases it
-    assert clicker.update(left_dist=0.20, right_dist=0.5) is None
+def test_sustained_contact_becomes_a_hold_not_a_click():
+    clicker, events = _recording_clicker(hold_delay=0.5)
+    clicker.update(left_dist=0.02, right_dist=0.5, now=0.0)   # contact
+    clicker.update(left_dist=0.02, right_dist=0.5, now=0.6)   # past 0.5s -> press
+    clicker.update(left_dist=0.20, right_dist=0.5, now=0.7)   # release -> mouseUp
     assert events == [("press", "left"), ("release", "left")]
 
 
-def test_hold_most_engaged_gesture_wins():
+def test_contact_must_actually_touch_not_just_near():
     clicker, events = _recording_clicker()
-    # left ratio 0.06/0.09=0.67, right ratio 0.02/0.045=0.44 -> right is more engaged
-    assert clicker.update(left_dist=0.06, right_dist=0.02) == "right"
-    assert events == [("press", "right")]
-
-
-def test_left_triggers_where_right_will_not():
-    # At 0.07 the thumb->left gesture presses (< 0.09), but the same distance is
-    # too far for the stricter right gesture (> 0.045), so right must really touch.
-    clicker, events = _recording_clicker()
-    assert clicker.update(left_dist=0.07, right_dist=0.07) == "left"
-    assert events == [("press", "left")]
-
-
-def test_hold_no_press_when_above_threshold():
-    clicker, events = _recording_clicker()
-    assert clicker.update(left_dist=0.20, right_dist=0.20) is None
+    # 0.07 is "near" but above the 0.05 touch threshold -> no contact at all
+    assert clicker.update(left_dist=0.07, right_dist=0.07, now=0.0) is None
+    assert clicker.active is None
     assert events == []
 
 
-def test_release_all_releases_held_button():
+def test_most_engaged_gesture_wins():
     clicker, events = _recording_clicker()
-    clicker.update(left_dist=0.03, right_dist=0.5)   # press left
+    # both below 0.05; right is closer -> right becomes active
+    assert clicker.update(left_dist=0.04, right_dist=0.01, now=0.0) == ("contact", "right")
+    assert clicker.active == "right"
+
+
+def test_no_action_above_threshold():
+    clicker, events = _recording_clicker()
+    assert clicker.update(left_dist=0.20, right_dist=0.20, now=0.0) is None
+    assert events == []
+
+
+def test_release_all_releases_active_hold():
+    clicker, events = _recording_clicker(hold_delay=0.5)
+    clicker.update(left_dist=0.02, right_dist=0.5, now=0.0)   # contact
+    clicker.update(left_dist=0.02, right_dist=0.5, now=0.6)   # holding
     clicker.release_all()
-    assert clicker.held is None
+    assert clicker.active is None
     assert events == [("press", "left"), ("release", "left")]
+
+
+def test_release_all_drops_pending_contact_without_clicking():
+    clicker, events = _recording_clicker(hold_delay=0.5)
+    clicker.update(left_dist=0.02, right_dist=0.5, now=0.0)   # contact, not yet held
+    clicker.release_all()
+    assert clicker.active is None
+    assert events == []
 
 
 from tracker import (

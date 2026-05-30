@@ -14,12 +14,15 @@ pyautogui.FAILSAFE = True  # slam cursor to a corner to abort
 
 # --- Tunable constants ---------------------------------------------------
 MARGIN = 0.15            # default inset fraction (overridden live by Speed slider)
-# Per-gesture click thresholds (normalized distance). Left is easy to trigger;
-# right requires the middle finger to actually touch the index knuckle.
-LEFT_THRESHOLD = 0.09    # thumb -> index knuckle: press when this close (easy)
-LEFT_RELEASE = 0.13      # release once fingers open past this (hysteresis)
-RIGHT_THRESHOLD = 0.045  # middle -> index knuckle: must nearly touch to press
-RIGHT_RELEASE = 0.075    # release once they separate past this (hysteresis)
+# Per-gesture click thresholds (normalized distance). Both require actual contact
+# with the index finger; hysteresis (release > press) avoids flicker.
+LEFT_THRESHOLD = 0.05    # thumb tip touching the index knuckle
+LEFT_RELEASE = 0.08
+RIGHT_THRESHOLD = 0.05   # middle fingertip touching the index fingertip
+RIGHT_RELEASE = 0.08
+
+# A contact shorter than this is a single click; longer becomes a press-and-hold (drag).
+HOLD_DELAY = 0.5         # seconds of sustained contact before a hold engages
 CAM_INDEX = 0            # default webcam index
 CAM_WIDTH, CAM_HEIGHT = 1280, 720   # request higher-res frames for better accuracy
 CURSOR_DEADZONE = 8      # px; ignore cursor moves smaller than this (kills micro-jitter)
@@ -199,58 +202,87 @@ class Deadzone:
         self._last = None
 
 
-class HoldClicker:
-    """Press-and-hold mouse buttons from two gesture distances.
+class GestureClicker:
+    """Turns two gesture distances into clicks and delayed press-and-holds.
 
-    Each gesture (left = thumb→index, right = middle→index) has its own press
-    and release thresholds, so left can be easy to trigger while right must
-    nearly touch. Whichever eligible gesture is most engaged (smallest
-    distance-to-threshold ratio) holds its button down; it releases when that
-    gesture opens past its release threshold (hysteresis avoids flicker). At
-    most one button is held at a time. A quick tap clicks; a sustained gesture
-    holds the button (drag).
+    A gesture going below its press threshold starts a contact. If it releases
+    (opens past its release threshold) before `hold_delay` seconds, it fires a
+    single click. If it stays in contact past `hold_delay`, the button is pressed
+    and held down (for dragging) until release. At most one gesture is active at
+    a time (the most-engaged one wins). Hysteresis (release > press) avoids
+    flicker.
 
-    `press_cb(button)` / `release_cb(button)` are called on the down/up edges
-    with button names "left" or "right".
+    Each callback takes a button name ("left"/"right"):
+      click_cb   — a single click (a quick tap)
+      press_cb   — mouse button down (a hold begins)
+      release_cb — mouse button up (a hold ends)
+
+    `update()` returns None or a (kind, button) tuple where kind is "contact",
+    "click", or "hold", for status display.
     """
 
-    def __init__(self, press_cb, release_cb,
+    def __init__(self, click_cb, press_cb, release_cb,
                  left_threshold=LEFT_THRESHOLD, left_release=LEFT_RELEASE,
-                 right_threshold=RIGHT_THRESHOLD, right_release=RIGHT_RELEASE):
+                 right_threshold=RIGHT_THRESHOLD, right_release=RIGHT_RELEASE,
+                 hold_delay=HOLD_DELAY):
+        self._click = click_cb
         self._press = press_cb
         self._release = release_cb
         self._threshold = {"left": left_threshold, "right": right_threshold}
         self._release_threshold = {"left": left_release, "right": right_release}
-        self._held = None  # None | "left" | "right"
+        self._hold_delay = hold_delay
+        self._active = None         # gesture currently in contact: None|"left"|"right"
+        self._contact_since = None
+        self._holding = False       # button currently held down
 
     @property
-    def held(self):
-        return self._held
+    def active(self):
+        return self._active
 
-    def update(self, left_dist, right_dist):
-        """Advance one frame given the two gesture distances; return held button."""
+    @property
+    def holding(self):
+        return self._holding
+
+    def update(self, left_dist, right_dist, now):
+        """Advance one frame; return None or (kind, button) for status."""
         dists = {"left": left_dist, "right": right_dist}
-        if self._held is not None:
-            if dists[self._held] > self._release_threshold[self._held]:
-                self._release(self._held)
-                self._held = None
-        if self._held is None:
+        if self._active is None:
             candidates = []
             for button, dist in dists.items():
                 if dist < self._threshold[button]:
-                    # rank by engagement (distance relative to this button's threshold)
                     candidates.append((dist / self._threshold[button], button))
             if candidates:
                 candidates.sort()              # most-engaged gesture wins
-                self._held = candidates[0][1]
-                self._press(self._held)
-        return self._held
+                self._active = candidates[0][1]
+                self._contact_since = now
+                self._holding = False
+                return ("contact", self._active)
+            return None
+
+        if dists[self._active] > self._release_threshold[self._active]:
+            button, was_holding = self._active, self._holding
+            self._active = None
+            self._contact_since = None
+            self._holding = False
+            if was_holding:
+                self._release(button)          # end of a hold
+                return None
+            self._click(button)                # short contact -> a click
+            return ("click", button)
+
+        if not self._holding and now - self._contact_since >= self._hold_delay:
+            self._holding = True
+            self._press(self._active)          # contact held long enough -> hold
+        return ("hold" if self._holding else "contact", self._active)
 
     def release_all(self):
-        """Release the held button, if any. Call on stop to avoid a stuck button."""
-        if self._held is not None:
-            self._release(self._held)
-            self._held = None
+        """Release a held button on stop. A pending (un-held) contact is dropped
+        without firing a click."""
+        if self._active is not None and self._holding:
+            self._release(self._active)
+        self._active = None
+        self._contact_since = None
+        self._holding = False
 
 
 class FingerMouseTracker:
@@ -264,7 +296,8 @@ class FingerMouseTracker:
         self._screen_w, self._screen_h = pyautogui.size()
         self._smoother = CursorSmoother(smoothing_to_cutoff(DEFAULT_SMOOTHING))
         self._deadzone = Deadzone(CURSOR_DEADZONE)
-        self._clicker = HoldClicker(
+        self._clicker = GestureClicker(
+            click_cb=lambda b: pyautogui.click(button=b),
             press_cb=lambda b: pyautogui.mouseDown(button=b),
             release_cb=lambda b: pyautogui.mouseUp(button=b),
         )
@@ -367,14 +400,18 @@ class FingerMouseTracker:
         if pos is not None:   # skip sub-deadzone moves so tiny jitter is ignored
             pyautogui.moveTo(*pos)
 
-        # Both click gestures touch the index finger's middle joint (PIP) so the
-        # pointer (index tip) stays put: thumb -> hold left, middle -> hold right.
+        # Left = thumb tip touching the index knuckle (PIP) so the pointer stays
+        # put; right = middle fingertip touching the index fingertip.
         left_dist = distance(thumb, index_pip)
-        right_dist = distance(middle_tip, index_pip)
-        held = self._clicker.update(left_dist, right_dist)
-        if held == "left":
-            self._status("Tracking — left hold")
-        elif held == "right":
-            self._status("Tracking — right hold")
-        else:
+        right_dist = distance(middle_tip, index_tip)
+        event = self._clicker.update(left_dist, right_dist, now)
+        if event is None:
             self._status("Tracking — hand detected")
+        else:
+            kind, button = event
+            if kind == "click":
+                self._status(f"Tracking — {button} click")
+            elif kind == "hold":
+                self._status(f"Tracking — {button} hold")
+            else:  # contact, pre-hold
+                self._status("Tracking — hand detected")

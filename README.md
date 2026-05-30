@@ -5,15 +5,15 @@ Control your mouse with your finger via webcam (Windows).
 - **Move cursor:** index fingertip (tiny movements are ignored, so the pointer
   stays steady while you hold still or click)
 - **Left click / hold:** touch your **thumb** to the **middle joint of your index
-  finger**. A quick tap clicks; holding keeps the left button down (so you can drag).
-- **Right click / hold:** touch your **middle fingertip** to that same index knuckle.
-  Quick tap = right click; hold to keep the right button down.
+  finger** (the knuckle). A quick tap clicks; holding the touch for more than half
+  a second presses-and-holds the left button (so you can drag).
+- **Right click / hold:** touch your **middle fingertip** to your **index fingertip**.
+  Quick tap = right click; hold past half a second to keep the right button down.
 - **Stop tracking:** show **both hands as fists** for about half a second
 
-Both click gestures touch the index *knuckle* (not the tip), so the pointer stays
-put while you click. Left click is easy — a small thumb movement triggers it.
-Right click is stricter: your middle finger must actually touch the index knuckle,
-which avoids accidental right-clicks since those fingers sit close together.
+Clicks only fire on actual contact (no accidental clicks when fingers are merely
+near). A short touch is a click; a touch held longer than ~0.5 s becomes a
+press-and-hold for dragging.
 
 In the window, two sliders tune the feel live:
 
