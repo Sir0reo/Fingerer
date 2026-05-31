@@ -22,8 +22,8 @@ MARGIN = 0.15            # default inset fraction (overridden live by Speed slid
 # threshold means "actually touching / nearly".
 # NOTE: release MUST stay above threshold (proper hysteresis); a release below the
 # threshold makes it engage-then-release every frame and rapid-fire clicks.
-LEFT_THRESHOLD = 0.45    # thumb within ~0.45 hand-lengths of the index finger (touch)
-LEFT_RELEASE = 0.65      # open past this to release
+LEFT_THRESHOLD = 0.80    # default engage distance (overridden live by the Sensitivity slider)
+LEFT_RELEASE = 0.90      # = threshold + LEFT_RELEASE_BAND
 # Right is intentionally strict (near-contact) and additionally gated on the middle
 # fingertip being on top of the index fingertip — together these stop misfires.
 RIGHT_THRESHOLD = 0.25   # middle fingertip on top of the index fingertip (strict)
@@ -43,6 +43,16 @@ SPEED_MIN, SPEED_MAX = 1, 10
 DEFAULT_SPEED = 4        # default cursor sensitivity (gain)
 MARGIN_AT_MIN_SPEED = 0.05   # slow: large active region
 MARGIN_AT_MAX_SPEED = 0.35   # fast: small active region
+
+# Click-sensitivity slider -> left-click engage threshold (ratio of hand size).
+# Higher = the thumb registers a click from farther away (easier to click). The
+# release sits a small fixed band above the engage threshold, so letting go always
+# takes only a little thumb travel no matter how the slider is set.
+CLICK_SENS_MIN, CLICK_SENS_MAX = 1, 10
+DEFAULT_CLICK_SENS = 6
+LEFT_THRESHOLD_AT_MIN_SENS = 0.30   # strict: thumb must nearly touch the index
+LEFT_THRESHOLD_AT_MAX_SENS = 1.20   # loose: thumb anywhere near the index clicks
+LEFT_RELEASE_BAND = 0.10            # release threshold = engage threshold + this
 
 # Smoothing slider -> One Euro Filter min-cutoff (higher slider = smoother).
 # The One Euro Filter smooths hard when the hand is slow (kills jitter) but eases
@@ -153,6 +163,19 @@ def speed_to_margin(speed):
     speed = min(max(speed, SPEED_MIN), SPEED_MAX)
     frac = (speed - SPEED_MIN) / (SPEED_MAX - SPEED_MIN)
     return MARGIN_AT_MIN_SPEED + frac * (MARGIN_AT_MAX_SPEED - MARGIN_AT_MIN_SPEED)
+
+
+def click_sensitivity_to_threshold(value):
+    """Map a Click-sensitivity slider value to the left-click engage threshold.
+
+    Higher slider -> larger threshold -> the thumb registers a click from farther
+    away (easier to click). Returns a float ratio of hand size.
+    """
+    value = min(max(value, CLICK_SENS_MIN), CLICK_SENS_MAX)
+    frac = (value - CLICK_SENS_MIN) / (CLICK_SENS_MAX - CLICK_SENS_MIN)
+    return LEFT_THRESHOLD_AT_MIN_SENS + frac * (
+        LEFT_THRESHOLD_AT_MAX_SENS - LEFT_THRESHOLD_AT_MIN_SENS
+    )
 
 
 def is_fist(landmarks):
@@ -347,6 +370,11 @@ class GestureClicker:
         (no dragging), no matter how long it's held."""
         self._hold_enabled = bool(enabled)
 
+    def set_left_thresholds(self, threshold, release):
+        """Update the left-click engage/release distances live (Sensitivity slider)."""
+        self._threshold["left"] = threshold
+        self._release_threshold["left"] = release
+
     @property
     def active(self):
         return self._active
@@ -418,6 +446,7 @@ class FingerMouseTracker:
             release_cb=lambda b: pyautogui.mouseUp(button=b),
         )
         self._margin = speed_to_margin(DEFAULT_SPEED)
+        self.set_click_sensitivity(DEFAULT_CLICK_SENS)
         self._fist_since = None     # when both fists were first seen (stop hold)
         self._stop_reason = None    # status message to show on loop exit
 
@@ -436,6 +465,12 @@ class FingerMouseTracker:
     def set_hold_enabled(self, enabled):
         """Enable/disable press-and-hold (drag). When off, gestures only click."""
         self._clicker.set_hold_enabled(enabled)
+
+    def set_click_sensitivity(self, value):
+        """Set how easily the left click engages (CLICK_SENS_MIN..MAX); higher = easier.
+        Release tracks a small band above engage so letting go needs little movement."""
+        threshold = click_sensitivity_to_threshold(value)
+        self._clicker.set_left_thresholds(threshold, threshold + LEFT_RELEASE_BAND)
 
     def _status(self, msg):
         self._status_callback(msg)

@@ -150,6 +150,13 @@ def test_no_click_immediately_after_a_hold():
     assert events == [("press", "left"), ("release", "left")]
 
 
+def test_set_left_thresholds_changes_engagement_live():
+    clicker, events = _recording_clicker(left_threshold=0.05, left_release=0.08)
+    assert clicker.update(left_dist=0.5, right_dist=9, now=0.0) is None  # 0.5 > 0.05
+    clicker.set_left_thresholds(0.6, 0.7)                                 # loosen live
+    assert clicker.update(left_dist=0.5, right_dist=9, now=0.1) == ("contact", "left")
+
+
 def test_hold_disabled_sustained_contact_clicks_instead_of_holding():
     clicker, events = _recording_clicker(hold_delay=0.5)
     clicker.set_hold_enabled(False)
@@ -334,6 +341,38 @@ from tracker import (
     MIN_CUTOFF_AT_MIN_SMOOTHING,
     MIN_CUTOFF_AT_MAX_SMOOTHING,
 )
+
+
+from tracker import (
+    click_sensitivity_to_threshold,
+    CLICK_SENS_MIN,
+    CLICK_SENS_MAX,
+    LEFT_THRESHOLD_AT_MIN_SENS,
+    LEFT_THRESHOLD_AT_MAX_SENS,
+)
+
+
+def test_min_sensitivity_maps_to_strictest_threshold():
+    assert math.isclose(
+        click_sensitivity_to_threshold(CLICK_SENS_MIN), LEFT_THRESHOLD_AT_MIN_SENS
+    )
+
+
+def test_max_sensitivity_maps_to_loosest_threshold():
+    assert math.isclose(
+        click_sensitivity_to_threshold(CLICK_SENS_MAX), LEFT_THRESHOLD_AT_MAX_SENS
+    )
+
+
+def test_higher_sensitivity_gives_larger_threshold():
+    assert click_sensitivity_to_threshold(8) > click_sensitivity_to_threshold(3)
+
+
+def test_click_sensitivity_clamps_out_of_range():
+    assert click_sensitivity_to_threshold(CLICK_SENS_MIN - 5) == \
+        click_sensitivity_to_threshold(CLICK_SENS_MIN)
+    assert click_sensitivity_to_threshold(CLICK_SENS_MAX + 5) == \
+        click_sensitivity_to_threshold(CLICK_SENS_MAX)
 
 
 def test_min_smoothing_maps_to_most_responsive_cutoff():
