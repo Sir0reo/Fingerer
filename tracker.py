@@ -22,8 +22,8 @@ MARGIN = 0.15            # default inset fraction (overridden live by Speed slid
 # threshold means "actually touching / nearly".
 # NOTE: release MUST stay above threshold (proper hysteresis); a release below the
 # threshold makes it engage-then-release every frame and rapid-fire clicks.
-LEFT_THRESHOLD = 0.80    # default engage distance (overridden live by the Sensitivity slider)
-LEFT_RELEASE = 0.90      # = threshold + LEFT_RELEASE_BAND
+LEFT_THRESHOLD = 0.30    # default engage distance (overridden live by the Sensitivity slider)
+LEFT_RELEASE = 0.35      # = threshold + LEFT_RELEASE_BAND
 # Right is intentionally strict (near-contact) and additionally gated on the middle
 # fingertip being on top of the index fingertip — together these stop misfires.
 RIGHT_THRESHOLD = 0.25   # middle fingertip on top of the index fingertip (strict)
@@ -49,10 +49,13 @@ MARGIN_AT_MAX_SPEED = 0.35   # fast: small active region
 # release sits a small fixed band above the engage threshold, so letting go always
 # takes only a little thumb travel no matter how the slider is set.
 CLICK_SENS_MIN, CLICK_SENS_MAX = 1, 10
-DEFAULT_CLICK_SENS = 6
-LEFT_THRESHOLD_AT_MIN_SENS = 0.30   # strict: thumb must nearly touch the index
-LEFT_THRESHOLD_AT_MAX_SENS = 1.20   # loose: thumb anywhere near the index clicks
-LEFT_RELEASE_BAND = 0.10            # release threshold = engage threshold + this
+DEFAULT_CLICK_SENS = 4
+# Kept close to the actual touch distance: a lower engage threshold means the thumb
+# engages near where it touches, so only a small open is needed to cross the release
+# point — little thumb travel to let go. (A high threshold makes release feel far.)
+LEFT_THRESHOLD_AT_MIN_SENS = 0.18   # strict: thumb must basically touch the index
+LEFT_THRESHOLD_AT_MAX_SENS = 0.55   # loose: registers from a bit farther out
+LEFT_RELEASE_BAND = 0.05            # small gap: release = engage threshold + this
 
 # Smoothing slider -> One Euro Filter min-cutoff (higher slider = smoother).
 # The One Euro Filter smooths hard when the hand is slow (kills jitter) but eases
