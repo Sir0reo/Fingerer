@@ -14,20 +14,21 @@ pyautogui.FAILSAFE = True  # slam cursor to a corner to abort
 
 # --- Tunable constants ---------------------------------------------------
 MARGIN = 0.15            # default inset fraction (overridden live by Speed slider)
-# Per-gesture click thresholds (normalized distance). Hysteresis (release > press)
-# avoids flicker.
-# Left is intentionally generous so clicking takes little effort. It's gated on the
-# thumb being bent *toward* the index knuckle (is_thumb_pointing_at), so the generous
-# threshold doesn't misfire when the thumb just rests nearby — and straightening the
-# thumb flips that gate, releasing instantly without needing a big movement.
+# Per-gesture click thresholds, expressed as a RATIO of the hand size (the
+# wrist-to-middle-knuckle length) so they behave the same at any distance from the
+# camera. Hysteresis (release > press) avoids flicker.
+# Left is intentionally very generous so clicking takes little effort — the real
+# control is the is_thumb_pointing_at gate (thumb bent *toward* the index knuckle),
+# which both engages the click and releases it the instant the thumb straightens, so
+# almost no travel is needed. The threshold just has to be loose enough not to block.
 # NOTE: release MUST stay above threshold (proper hysteresis); a release below the
 # threshold makes it engage-then-release every frame and rapid-fire clicks.
-LEFT_THRESHOLD = 0.30    # thumb bent toward the index knuckle (very easy)
-LEFT_RELEASE = 0.35      # small band; the pointing gate also releases on straighten
+LEFT_THRESHOLD = 1.5     # thumb tip within ~1.5 hand-lengths of the knuckle (very easy)
+LEFT_RELEASE = 1.8       # the pointing gate also releases on straighten
 # Right is intentionally strict (near-contact) and additionally gated on the middle
 # fingertip being on top of the index fingertip — together these stop misfires.
-RIGHT_THRESHOLD = 0.04   # middle fingertip on top of the index fingertip (strict)
-RIGHT_RELEASE = 0.06
+RIGHT_THRESHOLD = 0.25   # middle fingertip on top of the index fingertip (strict)
+RIGHT_RELEASE = 0.40
 
 # A contact shorter than this is a single click; longer becomes a press-and-hold (drag).
 HOLD_DELAY = 0.5         # seconds of sustained contact before a hold engages
@@ -58,6 +59,8 @@ ONE_EURO_DCUTOFF = 1.0              # derivative cutoff (filters the speed estim
 TWO_FIST_HOLD = 0.4      # seconds both fists must be held to stop tracking
 
 # MediaPipe landmark indices
+WRIST = 0
+MIDDLE_MCP = 9           # middle-finger knuckle; wrist->here is a stable hand-size ruler
 THUMB_IP = 3             # thumb middle knuckle (the joint that bends to curl the tip)
 THUMB_TIP = 4
 INDEX_PIP = 6            # index finger middle joint (left-click target)
@@ -150,6 +153,19 @@ def is_fist(landmarks):
     """
     lm = landmarks.landmark
     return all(lm[tip].y > lm[pip].y for tip, pip in zip(FINGER_TIPS, FINGER_PIPS))
+
+
+def hand_scale(landmarks):
+    """Return a reference hand size: the wrist-to-middle-knuckle distance.
+
+    This length tracks how big the hand appears in frame (near camera = large,
+    far = small) but barely changes as fingers curl, so dividing click distances
+    by it makes the click thresholds scale-invariant — they behave the same no
+    matter how far the user sits from the webcam. Floored to a small positive
+    value so callers never divide by zero.
+    """
+    lm = landmarks.landmark
+    return max(distance(lm[WRIST], lm[MIDDLE_MCP]), 1e-6)
 
 
 def is_thumb_pointing_at(thumb_tip, thumb_ip, target):
@@ -494,11 +510,15 @@ class FingerMouseTracker:
         if pos is not None:   # skip sub-deadzone moves so tiny jitter is ignored
             pyautogui.moveTo(*pos)
 
+        # Distances are divided by the hand size so the thresholds mean the same
+        # thing whether the user sits near or far from the camera.
+        scale = hand_scale(landmarks)
+
         # Left = thumb bent so its tip points at the index knuckle (PIP); the pointer
         # (index tip) stays put. Gated on the thumb pointing at the knuckle so the
         # generous threshold fires on a small natural bend, not a big reach.
         left_dist = (
-            distance(thumb, index_pip)
+            distance(thumb, index_pip) / scale
             if is_thumb_pointing_at(thumb, thumb_ip, index_pip)
             else float("inf")
         )
@@ -506,7 +526,7 @@ class FingerMouseTracker:
         # Right click only counts when the middle tip is on top of the index tip;
         # otherwise force it out of range so it can never engage (kills misfires).
         right_dist = (
-            distance(middle_tip, index_tip)
+            distance(middle_tip, index_tip) / scale
             if is_middle_over_index(middle_tip, index_tip)
             else float("inf")
         )
