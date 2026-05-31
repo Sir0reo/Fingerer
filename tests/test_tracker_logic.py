@@ -125,7 +125,7 @@ from tracker import GestureClicker
 
 
 def _recording_clicker(hold_delay=0.5, left_threshold=0.05, left_release=0.08,
-                       right_threshold=0.05, right_release=0.08):
+                       right_threshold=0.05, right_release=0.08, click_cooldown=0.3):
     """A GestureClicker that records ('click'|'press'|'release', button) events."""
     events = []
     clicker = GestureClicker(
@@ -134,9 +134,30 @@ def _recording_clicker(hold_delay=0.5, left_threshold=0.05, left_release=0.08,
         release_cb=lambda b: events.append(("release", b)),
         left_threshold=left_threshold, left_release=left_release,
         right_threshold=right_threshold, right_release=right_release,
-        hold_delay=hold_delay,
+        hold_delay=hold_delay, click_cooldown=click_cooldown,
     )
     return clicker, events
+
+
+def test_no_click_immediately_after_a_hold():
+    clicker, events = _recording_clicker(hold_delay=0.5, click_cooldown=0.3)
+    clicker.update(left_dist=0.02, right_dist=0.5, now=0.0)   # contact
+    clicker.update(left_dist=0.02, right_dist=0.5, now=0.6)   # hold -> press
+    clicker.update(left_dist=0.20, right_dist=0.5, now=0.7)   # release hold -> mouseUp
+    # a contact that releases within the cooldown must NOT fire a click
+    clicker.update(left_dist=0.02, right_dist=0.5, now=0.8)   # contact
+    clicker.update(left_dist=0.20, right_dist=0.5, now=0.85)  # release within cooldown
+    assert events == [("press", "left"), ("release", "left")]
+
+
+def test_click_works_again_after_cooldown_elapses():
+    clicker, events = _recording_clicker(hold_delay=0.5, click_cooldown=0.3)
+    clicker.update(left_dist=0.02, right_dist=0.5, now=0.0)   # contact
+    clicker.update(left_dist=0.02, right_dist=0.5, now=0.6)   # hold -> press
+    clicker.update(left_dist=0.20, right_dist=0.5, now=0.7)   # release hold (cooldown -> 1.0)
+    clicker.update(left_dist=0.02, right_dist=0.5, now=1.1)   # contact after cooldown
+    clicker.update(left_dist=0.20, right_dist=0.5, now=1.15)  # release -> click allowed
+    assert events == [("press", "left"), ("release", "left"), ("click", "left")]
 
 
 def test_quick_tap_fires_a_click():
@@ -190,6 +211,38 @@ def test_release_all_drops_pending_contact_without_clicking():
     clicker.release_all()
     assert clicker.active is None
     assert events == []
+
+
+from tracker import is_thumb_pointing_at
+
+
+def test_thumb_pointing_true_when_tip_closer_to_target_than_ip():
+    target = _pt(0.5, 0.5)
+    # tip 0.05 from target, IP 0.20 from target -> thumb is bent toward the target
+    assert is_thumb_pointing_at(_pt(0.5, 0.55), _pt(0.5, 0.70), target) is True
+
+
+def test_thumb_pointing_false_when_tip_farther_than_ip():
+    target = _pt(0.5, 0.5)
+    # tip 0.30 from target, IP 0.15 from target -> thumb points away
+    assert is_thumb_pointing_at(_pt(0.5, 0.80), _pt(0.5, 0.65), target) is False
+
+
+from tracker import is_middle_over_index
+
+
+def test_middle_over_index_true_when_middle_tip_higher():
+    # Middle fingertip sitting on top of (above, smaller y) the index fingertip.
+    assert is_middle_over_index(_pt(0.5, 0.40), _pt(0.5, 0.45)) is True
+
+
+def test_middle_over_index_false_when_middle_tip_below_index():
+    # Middle fingertip below the index fingertip -> not "on top".
+    assert is_middle_over_index(_pt(0.5, 0.50), _pt(0.5, 0.45)) is False
+
+
+def test_middle_over_index_false_when_level():
+    assert is_middle_over_index(_pt(0.5, 0.45), _pt(0.5, 0.45)) is False
 
 
 from tracker import (

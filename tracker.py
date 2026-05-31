@@ -14,15 +14,24 @@ pyautogui.FAILSAFE = True  # slam cursor to a corner to abort
 
 # --- Tunable constants ---------------------------------------------------
 MARGIN = 0.15            # default inset fraction (overridden live by Speed slider)
-# Per-gesture click thresholds (normalized distance). Both require actual contact
-# with the index finger; hysteresis (release > press) avoids flicker.
-LEFT_THRESHOLD = 0.05    # thumb tip touching the index knuckle
-LEFT_RELEASE = 0.08
-RIGHT_THRESHOLD = 0.05   # middle fingertip touching the index fingertip
-RIGHT_RELEASE = 0.08
+# Per-gesture click thresholds (normalized distance). Hysteresis (release > press)
+# avoids flicker.
+# Left is intentionally generous so a quick thumb tap registers without needing a
+# big movement or near-perfect contact. It's also gated on the thumb being bent
+# *toward* the index knuckle (is_thumb_pointing_at), so the generous threshold
+# doesn't misfire when the thumb merely rests nearby.
+LEFT_THRESHOLD = 0.12    # thumb tip pointing at the index knuckle (easy)
+LEFT_RELEASE = 0.16
+# Right is intentionally strict (near-contact) and additionally gated on the middle
+# fingertip being on top of the index fingertip — together these stop misfires.
+RIGHT_THRESHOLD = 0.04   # middle fingertip on top of the index fingertip (strict)
+RIGHT_RELEASE = 0.06
 
 # A contact shorter than this is a single click; longer becomes a press-and-hold (drag).
 HOLD_DELAY = 0.5         # seconds of sustained contact before a hold engages
+# After a hold releases, suppress any click for this long so letting go of a hold
+# never fires a stray click right after.
+CLICK_COOLDOWN = 0.3     # seconds
 CAM_INDEX = 0            # default webcam index
 CAM_WIDTH, CAM_HEIGHT = 1280, 720   # request higher-res frames for better accuracy
 CURSOR_DEADZONE = 8      # px; ignore cursor moves smaller than this (kills micro-jitter)
@@ -47,6 +56,7 @@ ONE_EURO_DCUTOFF = 1.0              # derivative cutoff (filters the speed estim
 TWO_FIST_HOLD = 0.4      # seconds both fists must be held to stop tracking
 
 # MediaPipe landmark indices
+THUMB_IP = 3             # thumb middle knuckle (the joint that bends to curl the tip)
 THUMB_TIP = 4
 INDEX_PIP = 6            # index finger middle joint (left-click target)
 INDEX_TIP = 8
@@ -96,6 +106,28 @@ def is_fist(landmarks):
     """
     lm = landmarks.landmark
     return all(lm[tip].y > lm[pip].y for tip, pip in zip(FINGER_TIPS, FINGER_PIPS))
+
+
+def is_thumb_pointing_at(thumb_tip, thumb_ip, target):
+    """Return True if the thumb is bent so its tip points toward `target`.
+
+    True when the thumb tip is closer to the target than the thumb's middle
+    knuckle (IP joint) is — i.e. the last thumb segment angles toward the target.
+    This lets the left click fire on a small, natural thumb bend pointing at the
+    index knuckle, instead of requiring the whole thumb to reach over and touch.
+    """
+    return distance(thumb_tip, target) < distance(thumb_ip, target)
+
+
+def is_middle_over_index(middle_tip, index_tip):
+    """Return True if the middle fingertip sits on top of the index fingertip.
+
+    "On top" means higher in the image — a smaller y. Requiring this makes the
+    right-click gesture deliberate (the middle finger must be placed over the
+    index fingertip) instead of firing whenever the two tips drift near each
+    other, which caused false right-clicks.
+    """
+    return middle_tip.y < index_tip.y
 
 
 def smoothing_to_cutoff(value):
@@ -224,16 +256,18 @@ class GestureClicker:
     def __init__(self, click_cb, press_cb, release_cb,
                  left_threshold=LEFT_THRESHOLD, left_release=LEFT_RELEASE,
                  right_threshold=RIGHT_THRESHOLD, right_release=RIGHT_RELEASE,
-                 hold_delay=HOLD_DELAY):
+                 hold_delay=HOLD_DELAY, click_cooldown=CLICK_COOLDOWN):
         self._click = click_cb
         self._press = press_cb
         self._release = release_cb
         self._threshold = {"left": left_threshold, "right": right_threshold}
         self._release_threshold = {"left": left_release, "right": right_release}
         self._hold_delay = hold_delay
+        self._click_cooldown = click_cooldown
         self._active = None         # gesture currently in contact: None|"left"|"right"
         self._contact_since = None
         self._holding = False       # button currently held down
+        self._cooldown_until = 0.0  # clicks suppressed until this time (post-hold)
 
     @property
     def active(self):
@@ -266,6 +300,9 @@ class GestureClicker:
             self._holding = False
             if was_holding:
                 self._release(button)          # end of a hold
+                self._cooldown_until = now + self._click_cooldown
+                return None
+            if now < self._cooldown_until:     # too soon after a hold -> swallow click
                 return None
             self._click(button)                # short contact -> a click
             return ("click", button)
@@ -391,6 +428,7 @@ class FingerMouseTracker:
         lm = landmarks.landmark
         index_tip, thumb = lm[INDEX_TIP], lm[THUMB_TIP]
         index_pip, middle_tip = lm[INDEX_PIP], lm[MIDDLE_TIP]
+        thumb_ip = lm[THUMB_IP]
 
         sx, sy = map_to_screen(
             index_tip.x, index_tip.y, self._screen_w, self._screen_h, self._margin
@@ -400,10 +438,22 @@ class FingerMouseTracker:
         if pos is not None:   # skip sub-deadzone moves so tiny jitter is ignored
             pyautogui.moveTo(*pos)
 
-        # Left = thumb tip touching the index knuckle (PIP) so the pointer stays
-        # put; right = middle fingertip touching the index fingertip.
-        left_dist = distance(thumb, index_pip)
-        right_dist = distance(middle_tip, index_tip)
+        # Left = thumb bent so its tip points at the index knuckle (PIP); the pointer
+        # (index tip) stays put. Gated on the thumb pointing at the knuckle so the
+        # generous threshold fires on a small natural bend, not a big reach.
+        left_dist = (
+            distance(thumb, index_pip)
+            if is_thumb_pointing_at(thumb, thumb_ip, index_pip)
+            else float("inf")
+        )
+        # right = middle fingertip placed on top of the index fingertip.
+        # Right click only counts when the middle tip is on top of the index tip;
+        # otherwise force it out of range so it can never engage (kills misfires).
+        right_dist = (
+            distance(middle_tip, index_tip)
+            if is_middle_over_index(middle_tip, index_tip)
+            else float("inf")
+        )
         event = self._clicker.update(left_dist, right_dist, now)
         if event is None:
             self._status("Tracking — hand detected")
