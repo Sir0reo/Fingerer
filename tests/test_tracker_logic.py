@@ -150,6 +150,16 @@ def test_no_click_immediately_after_a_hold():
     assert events == [("press", "left"), ("release", "left")]
 
 
+def test_hold_disabled_sustained_contact_clicks_instead_of_holding():
+    clicker, events = _recording_clicker(hold_delay=0.5)
+    clicker.set_hold_enabled(False)
+    clicker.update(left_dist=0.02, right_dist=0.5, now=0.0)   # contact
+    clicker.update(left_dist=0.02, right_dist=0.5, now=0.6)   # past hold_delay, hold off
+    assert clicker.holding is False                           # never engages a hold
+    clicker.update(left_dist=0.20, right_dist=0.5, now=0.7)   # release -> single click
+    assert events == [("click", "left")]
+
+
 def test_click_works_again_after_cooldown_elapses():
     clicker, events = _recording_clicker(hold_delay=0.5, click_cooldown=0.3)
     clicker.update(left_dist=0.02, right_dist=0.5, now=0.0)   # contact

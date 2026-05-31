@@ -16,12 +16,14 @@ pyautogui.FAILSAFE = True  # slam cursor to a corner to abort
 MARGIN = 0.15            # default inset fraction (overridden live by Speed slider)
 # Per-gesture click thresholds (normalized distance). Hysteresis (release > press)
 # avoids flicker.
-# Left is intentionally generous so a quick thumb tap registers without needing a
-# big movement or near-perfect contact. It's also gated on the thumb being bent
-# *toward* the index knuckle (is_thumb_pointing_at), so the generous threshold
-# doesn't misfire when the thumb merely rests nearby.
-LEFT_THRESHOLD = 0.12    # thumb tip pointing at the index knuckle (easy)
-LEFT_RELEASE = 0.16
+# Left is intentionally generous so clicking takes little effort. It's gated on the
+# thumb being bent *toward* the index knuckle (is_thumb_pointing_at), so the generous
+# threshold doesn't misfire when the thumb just rests nearby — and straightening the
+# thumb flips that gate, releasing instantly without needing a big movement.
+# NOTE: release MUST stay above threshold (proper hysteresis); a release below the
+# threshold makes it engage-then-release every frame and rapid-fire clicks.
+LEFT_THRESHOLD = 0.30    # thumb bent toward the index knuckle (very easy)
+LEFT_RELEASE = 0.35      # small band; the pointing gate also releases on straighten
 # Right is intentionally strict (near-contact) and additionally gated on the middle
 # fingertip being on top of the index fingertip — together these stop misfires.
 RIGHT_THRESHOLD = 0.04   # middle fingertip on top of the index fingertip (strict)
@@ -64,6 +66,48 @@ MIDDLE_TIP = 12
 # Fingertip / PIP pairs for fist detection (index, middle, ring, pinky)
 FINGER_TIPS = (8, 12, 16, 20)
 FINGER_PIPS = (6, 10, 14, 18)
+
+
+def disable_background_throttling():
+    """Best-effort: stop Windows from throttling this process when its window is
+    not focused, so cursor tracking stays smooth after switching to another app.
+
+    Windows 11 applies power throttling (EcoQoS) and lower scheduling priority to
+    background processes; that starves the capture/tracking thread and makes the
+    cursor lag once Fingerer loses focus. We opt out of execution-speed throttling
+    and bump the priority class. No-op on non-Windows or if the calls fail.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.GetCurrentProcess()
+
+        ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
+        kernel32.SetPriorityClass(handle, ABOVE_NORMAL_PRIORITY_CLASS)
+
+        class _PowerThrottlingState(ctypes.Structure):
+            _fields_ = [
+                ("Version", wintypes.ULONG),
+                ("ControlMask", wintypes.ULONG),
+                ("StateMask", wintypes.ULONG),
+            ]
+
+        PROCESS_POWER_THROTTLING_CURRENT_VERSION = 1
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED = 0x1
+        ProcessPowerThrottling = 4  # PROCESS_INFORMATION_CLASS
+
+        state = _PowerThrottlingState(
+            Version=PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            ControlMask=PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            StateMask=0,  # 0 = disable throttling (always run at full speed)
+        )
+        kernel32.SetProcessInformation(
+            handle, ProcessPowerThrottling, ctypes.byref(state), ctypes.sizeof(state)
+        )
+    except Exception:
+        pass  # purely an optimization; never let it break startup
 
 
 def distance(p1, p2):
@@ -264,10 +308,16 @@ class GestureClicker:
         self._release_threshold = {"left": left_release, "right": right_release}
         self._hold_delay = hold_delay
         self._click_cooldown = click_cooldown
+        self._hold_enabled = True    # when False, gestures only ever single-click
         self._active = None         # gesture currently in contact: None|"left"|"right"
         self._contact_since = None
         self._holding = False       # button currently held down
         self._cooldown_until = 0.0  # clicks suppressed until this time (post-hold)
+
+    def set_hold_enabled(self, enabled):
+        """Enable/disable press-and-hold. When disabled, every contact is a click
+        (no dragging), no matter how long it's held."""
+        self._hold_enabled = bool(enabled)
 
     @property
     def active(self):
@@ -307,7 +357,8 @@ class GestureClicker:
             self._click(button)                # short contact -> a click
             return ("click", button)
 
-        if not self._holding and now - self._contact_since >= self._hold_delay:
+        if (self._hold_enabled and not self._holding
+                and now - self._contact_since >= self._hold_delay):
             self._holding = True
             self._press(self._active)          # contact held long enough -> hold
         return ("hold" if self._holding else "contact", self._active)
@@ -354,12 +405,17 @@ class FingerMouseTracker:
         """Set smoothing strength (SMOOTHING_MIN..SMOOTHING_MAX); higher = steadier."""
         self._smoother.set_min_cutoff(smoothing_to_cutoff(value))
 
+    def set_hold_enabled(self, enabled):
+        """Enable/disable press-and-hold (drag). When off, gestures only click."""
+        self._clicker.set_hold_enabled(enabled)
+
     def _status(self, msg):
         self._status_callback(msg)
 
     def start(self):
         if self.running:
             return
+        disable_background_throttling()   # keep tracking smooth when unfocused
         self._stop_event.clear()
         self._smoother.reset()
         self._deadzone.reset()
