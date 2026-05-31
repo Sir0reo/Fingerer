@@ -11,6 +11,9 @@ from tracker import (
     SMOOTHING_MIN,
     SMOOTHING_MAX,
     DEFAULT_SMOOTHING,
+    CLICK_SENS_MIN,
+    CLICK_SENS_MAX,
+    DEFAULT_CLICK_SENS,
 )
 
 
@@ -51,6 +54,14 @@ class FingererApp:
             length=220, variable=self.smooth_var, command=self.on_smooth,
         ).pack(padx=20, pady=(0, 10))
 
+        # Click sensitivity slider — higher = left click registers more easily.
+        tk.Label(root, text="Click sensitivity").pack()
+        self.click_var = tk.IntVar(value=DEFAULT_CLICK_SENS)
+        tk.Scale(
+            root, from_=CLICK_SENS_MIN, to=CLICK_SENS_MAX, orient="horizontal",
+            length=220, variable=self.click_var, command=self.on_click_sens,
+        ).pack(padx=20, pady=(0, 10))
+
         # Hold toggle — when off, gestures only click (no press-and-hold / drag).
         self.hold_var = tk.BooleanVar(value=True)
         tk.Checkbutton(
@@ -71,6 +82,9 @@ class FingererApp:
 
     def on_smooth(self, value):
         self.tracker.set_smoothing(int(float(value)))
+
+    def on_click_sens(self, value):
+        self.tracker.set_click_sensitivity(int(float(value)))
 
     def on_hold_toggle(self):
         self.tracker.set_hold_enabled(self.hold_var.get())
