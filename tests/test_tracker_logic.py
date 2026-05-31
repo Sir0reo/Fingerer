@@ -223,7 +223,7 @@ def test_release_all_drops_pending_contact_without_clicking():
     assert events == []
 
 
-from tracker import hand_scale
+from tracker import hand_scale, min_landmark_distance
 
 
 def _hand21(pts=None):
@@ -246,19 +246,14 @@ def test_hand_scale_never_zero():
     assert hand_scale(hand) > 0
 
 
-from tracker import is_thumb_pointing_at
-
-
-def test_thumb_pointing_true_when_tip_closer_to_target_than_ip():
-    target = _pt(0.5, 0.5)
-    # tip 0.05 from target, IP 0.20 from target -> thumb is bent toward the target
-    assert is_thumb_pointing_at(_pt(0.5, 0.55), _pt(0.5, 0.70), target) is True
-
-
-def test_thumb_pointing_false_when_tip_farther_than_ip():
-    target = _pt(0.5, 0.5)
-    # tip 0.30 from target, IP 0.15 from target -> thumb points away
-    assert is_thumb_pointing_at(_pt(0.5, 0.80), _pt(0.5, 0.65), target) is False
+def test_min_landmark_distance_finds_closest_pair():
+    # thumb IP (3) sits closest to index PIP (6); everything else is far.
+    hand = _hand21({
+        4: _pt(0.9, 0.9), 3: _pt(0.50, 0.50),
+        8: _pt(0.1, 0.1), 6: _pt(0.50, 0.55),
+    })
+    # closest of all (thumb 4,3) x (index 8,6) pairs is 3<->6 = 0.05
+    assert math.isclose(min_landmark_distance(hand, (4, 3), (8, 6)), 0.05)
 
 
 from tracker import is_middle_over_index

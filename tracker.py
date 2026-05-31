@@ -17,14 +17,13 @@ MARGIN = 0.15            # default inset fraction (overridden live by Speed slid
 # Per-gesture click thresholds, expressed as a RATIO of the hand size (the
 # wrist-to-middle-knuckle length) so they behave the same at any distance from the
 # camera. Hysteresis (release > press) avoids flicker.
-# Left is intentionally very generous so clicking takes little effort — the real
-# control is the is_thumb_pointing_at gate (thumb bent *toward* the index knuckle),
-# which both engages the click and releases it the instant the thumb straightens, so
-# almost no travel is needed. The threshold just has to be loose enough not to block.
+# Left fires whenever the thumb touches the index finger anywhere (closest distance
+# between any thumb point and any index point). Touch ~= ratio near 0, so a small
+# threshold means "actually touching / nearly".
 # NOTE: release MUST stay above threshold (proper hysteresis); a release below the
 # threshold makes it engage-then-release every frame and rapid-fire clicks.
-LEFT_THRESHOLD = 1.5     # thumb tip within ~1.5 hand-lengths of the knuckle (very easy)
-LEFT_RELEASE = 1.8       # the pointing gate also releases on straighten
+LEFT_THRESHOLD = 0.45    # thumb within ~0.45 hand-lengths of the index finger (touch)
+LEFT_RELEASE = 0.65      # open past this to release
 # Right is intentionally strict (near-contact) and additionally gated on the middle
 # fingertip being on top of the index fingertip — together these stop misfires.
 RIGHT_THRESHOLD = 0.25   # middle fingertip on top of the index fingertip (strict)
@@ -63,8 +62,13 @@ WRIST = 0
 MIDDLE_MCP = 9           # middle-finger knuckle; wrist->here is a stable hand-size ruler
 THUMB_IP = 3             # thumb middle knuckle (the joint that bends to curl the tip)
 THUMB_TIP = 4
-INDEX_PIP = 6            # index finger middle joint (left-click target)
+INDEX_MCP = 5            # index finger base knuckle
+INDEX_PIP = 6            # index finger middle joint
+INDEX_DIP = 7            # index finger top joint
 INDEX_TIP = 8
+# Left click fires when any of these thumb points touches any of these index points.
+THUMB_TOUCH_POINTS = (THUMB_TIP, THUMB_IP)            # 4, 3
+INDEX_TOUCH_POINTS = (INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP)  # 5, 6, 7, 8
 MIDDLE_TIP = 12
 # Fingertip / PIP pairs for fist detection (index, middle, ring, pinky)
 FINGER_TIPS = (8, 12, 16, 20)
@@ -109,6 +113,13 @@ def disable_background_throttling():
         kernel32.SetProcessInformation(
             handle, ProcessPowerThrottling, ctypes.byref(state), ctypes.sizeof(state)
         )
+
+        # Windows coarsens the system timer for background apps, which makes the
+        # capture loop wake up less regularly (choppier cursor). Pin it to 1 ms.
+        try:
+            ctypes.WinDLL("winmm").timeBeginPeriod(1)
+        except Exception:
+            pass
     except Exception:
         pass  # purely an optimization; never let it break startup
 
@@ -155,6 +166,18 @@ def is_fist(landmarks):
     return all(lm[tip].y > lm[pip].y for tip, pip in zip(FINGER_TIPS, FINGER_PIPS))
 
 
+def min_landmark_distance(landmarks, a_indices, b_indices):
+    """Smallest distance between any landmark in `a_indices` and any in `b_indices`.
+
+    Used so the left click fires when the thumb touches the index finger *anywhere*
+    along it (any thumb point near any index point), not just one specific pair.
+    """
+    lm = landmarks.landmark
+    return min(
+        distance(lm[a], lm[b]) for a in a_indices for b in b_indices
+    )
+
+
 def hand_scale(landmarks):
     """Return a reference hand size: the wrist-to-middle-knuckle distance.
 
@@ -166,17 +189,6 @@ def hand_scale(landmarks):
     """
     lm = landmarks.landmark
     return max(distance(lm[WRIST], lm[MIDDLE_MCP]), 1e-6)
-
-
-def is_thumb_pointing_at(thumb_tip, thumb_ip, target):
-    """Return True if the thumb is bent so its tip points toward `target`.
-
-    True when the thumb tip is closer to the target than the thumb's middle
-    knuckle (IP joint) is — i.e. the last thumb segment angles toward the target.
-    This lets the left click fire on a small, natural thumb bend pointing at the
-    index knuckle, instead of requiring the whole thumb to reach over and touch.
-    """
-    return distance(thumb_tip, target) < distance(thumb_ip, target)
 
 
 def is_middle_over_index(middle_tip, index_tip):
@@ -498,9 +510,7 @@ class FingerMouseTracker:
 
     def _process_hand(self, landmarks, now):
         lm = landmarks.landmark
-        index_tip, thumb = lm[INDEX_TIP], lm[THUMB_TIP]
-        index_pip, middle_tip = lm[INDEX_PIP], lm[MIDDLE_TIP]
-        thumb_ip = lm[THUMB_IP]
+        index_tip, middle_tip = lm[INDEX_TIP], lm[MIDDLE_TIP]
 
         sx, sy = map_to_screen(
             index_tip.x, index_tip.y, self._screen_w, self._screen_h, self._margin
@@ -514,14 +524,11 @@ class FingerMouseTracker:
         # thing whether the user sits near or far from the camera.
         scale = hand_scale(landmarks)
 
-        # Left = thumb bent so its tip points at the index knuckle (PIP); the pointer
-        # (index tip) stays put. Gated on the thumb pointing at the knuckle so the
-        # generous threshold fires on a small natural bend, not a big reach.
-        left_dist = (
-            distance(thumb, index_pip) / scale
-            if is_thumb_pointing_at(thumb, thumb_ip, index_pip)
-            else float("inf")
-        )
+        # Left = the thumb touching the index finger anywhere: the closest distance
+        # between any thumb point (tip/IP) and any index point (MCP..tip).
+        left_dist = min_landmark_distance(
+            landmarks, THUMB_TOUCH_POINTS, INDEX_TOUCH_POINTS
+        ) / scale
         # right = middle fingertip placed on top of the index fingertip.
         # Right click only counts when the middle tip is on top of the index tip;
         # otherwise force it out of range so it can never engage (kills misfires).
