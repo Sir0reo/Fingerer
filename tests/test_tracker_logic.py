@@ -105,6 +105,22 @@ def test_deadzone_allows_large_move():
     assert dz.filter(100, 120) == (100, 120)  # 20 px >= 8 -> moves
 
 
+def test_deadzone_follows_continuous_movement():
+    # While the hand is actually moving (per-frame step >= move_threshold), the
+    # cursor should follow every frame, not get quantized into radius-sized jumps.
+    dz = Deadzone(radius=11, move_threshold=7)
+    dz.filter(100, 100)                       # commit start
+    assert dz.filter(108, 100) == (108, 100)  # 8px step >= 7 -> follow (even though < radius)
+    assert dz.filter(116, 100) == (116, 100)  # keeps following
+
+
+def test_deadzone_suppresses_jitter_when_still():
+    # Small per-frame wobble (< move_threshold) while holding still is suppressed.
+    dz = Deadzone(radius=11, move_threshold=7)
+    dz.filter(100, 100)
+    assert dz.filter(103, 102) is None   # ~3.6px step < 7 -> still, and < radius -> ignored
+
+
 def test_deadzone_reference_is_not_cumulative():
     # Small steps are measured from the last committed position, not summed.
     dz = Deadzone(radius=10)

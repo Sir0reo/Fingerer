@@ -22,8 +22,8 @@ MARGIN = 0.15            # default inset fraction (overridden live by Speed slid
 # threshold means "actually touching / nearly".
 # NOTE: release MUST stay above threshold (proper hysteresis); a release below the
 # threshold makes it engage-then-release every frame and rapid-fire clicks.
-LEFT_THRESHOLD = 0.16    # default engage distance (overridden live by the Sensitivity slider)
-LEFT_RELEASE = 0.19      # = threshold + LEFT_RELEASE_BAND
+LEFT_THRESHOLD = 0.15    # default engage distance (overridden live by the Sensitivity slider)
+LEFT_RELEASE = 0.18      # = threshold + LEFT_RELEASE_BAND
 # Right is intentionally strict (near-contact) and additionally gated on the middle
 # fingertip being on top of the index fingertip — together these stop misfires.
 RIGHT_THRESHOLD = 0.25   # middle fingertip on top of the index fingertip (strict)
@@ -36,7 +36,8 @@ HOLD_DELAY = 0.5         # seconds of sustained contact before a hold engages
 CLICK_COOLDOWN = 0.3     # seconds
 CAM_INDEX = 0            # default webcam index
 CAM_WIDTH, CAM_HEIGHT = 1280, 720   # request higher-res frames for better accuracy
-CURSOR_DEADZONE = 11     # px; ignore cursor moves smaller than this (kills micro-jitter)
+CURSOR_DEADZONE = 11     # px; while still, ignore cursor moves smaller than this
+DEADZONE_MOVE_THRESHOLD = 7   # px/frame; above this the deadzone steps aside and follows
 
 # Speed slider -> active-region margin (higher speed = larger margin = faster cursor)
 SPEED_MIN, SPEED_MAX = 1, 10
@@ -49,11 +50,11 @@ MARGIN_AT_MAX_SPEED = 0.35   # fast: small active region
 # release sits a small fixed band above the engage threshold, so letting go always
 # takes only a little thumb travel no matter how the slider is set.
 CLICK_SENS_MIN, CLICK_SENS_MAX = 1, 10
-DEFAULT_CLICK_SENS = 3
+DEFAULT_CLICK_SENS = 2
 # Kept close to the actual touch distance: a lower engage threshold means the thumb
 # engages near where it touches, so only a small open is needed to cross the release
 # point — little thumb travel to let go. (A high threshold makes release feel far.)
-LEFT_THRESHOLD_AT_MIN_SENS = 0.10   # strict: thumb must basically touch the index
+LEFT_THRESHOLD_AT_MIN_SENS = 0.13   # strict: thumb must basically touch the index
 LEFT_THRESHOLD_AT_MAX_SENS = 0.35   # loose: registers from a bit farther out
 LEFT_RELEASE_BAND = 0.03            # tiny gap: release = engage threshold + this
 
@@ -310,26 +311,42 @@ class CursorSmoother:
 
 
 class Deadzone:
-    """Suppresses tiny cursor movement so micro-jitter is ignored.
+    """Suppresses micro-jitter only while the cursor is essentially still.
 
-    Returns the position to move to, or None when the new position is within
-    `radius` pixels of the last committed position (meaning: don't move). The
-    reference position only updates on a committed move, so the cursor stays
-    perfectly still until a movement larger than the radius occurs.
+    Two modes, decided per frame by how far the input moved since the last frame:
+      - Moving (step >= `move_threshold`): follow the input directly every frame,
+        so deliberate motion isn't quantized into laggy radius-sized jumps.
+      - Still (step < `move_threshold`): hold position, only committing once the
+        input drifts more than `radius` from the last committed point — this keeps
+        the cursor locked while holding still / clicking.
+
+    Returns the position to move to, or None to stay put.
     """
 
-    def __init__(self, radius=CURSOR_DEADZONE):
+    def __init__(self, radius=CURSOR_DEADZONE, move_threshold=DEADZONE_MOVE_THRESHOLD):
         self.radius = radius
-        self._last = None
+        self.move_threshold = move_threshold
+        self._committed = None
+        self._prev_input = None
 
     def filter(self, x, y):
-        if self._last is None or math.hypot(x - self._last[0], y - self._last[1]) >= self.radius:
-            self._last = (x, y)
-            return self._last
+        moving = (
+            self._prev_input is not None
+            and math.hypot(x - self._prev_input[0], y - self._prev_input[1]) >= self.move_threshold
+        )
+        self._prev_input = (x, y)
+        if self._committed is None or moving:
+            self._committed = (x, y)
+            return self._committed
+        # Nearly stationary: ignore sub-radius jitter, commit only a real drift.
+        if math.hypot(x - self._committed[0], y - self._committed[1]) >= self.radius:
+            self._committed = (x, y)
+            return self._committed
         return None
 
     def reset(self):
-        self._last = None
+        self._committed = None
+        self._prev_input = None
 
 
 class GestureClicker:
