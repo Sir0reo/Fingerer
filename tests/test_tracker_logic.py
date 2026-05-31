@@ -223,6 +223,29 @@ def test_release_all_drops_pending_contact_without_clicking():
     assert events == []
 
 
+from tracker import hand_scale
+
+
+def _hand21(pts=None):
+    """A fake 21-landmark hand; pass {index: point} overrides."""
+    lm = [SimpleNamespace(x=0.5, y=0.5) for _ in range(21)]
+    for i, p in (pts or {}).items():
+        lm[i] = p
+    return SimpleNamespace(landmark=lm)
+
+
+def test_hand_scale_is_wrist_to_middle_mcp_distance():
+    # wrist (0) at origin, middle-finger MCP (9) at (0.3, 0.4) -> distance 0.5
+    hand = _hand21({0: _pt(0.0, 0.0), 9: _pt(0.3, 0.4)})
+    assert math.isclose(hand_scale(hand), 0.5)
+
+
+def test_hand_scale_never_zero():
+    # Degenerate hand (all points identical) must not return 0 (avoids div-by-zero).
+    hand = _hand21()
+    assert hand_scale(hand) > 0
+
+
 from tracker import is_thumb_pointing_at
 
 
